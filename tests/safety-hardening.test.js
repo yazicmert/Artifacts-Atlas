@@ -716,3 +716,44 @@ test('S11. The unused cleanup leaves out files opened recently and files that ar
     sandbox.cleanup();
   }
 });
+
+test('S12. A confirmed review moves the files it listed; one that changed since stays, and is reported', async () => {
+  const sandbox = createTempSandbox();
+  try {
+    const { service, state } = await createScannedDemoService(sandbox.dir);
+    const safe = state.artifacts.filter((a) => a.cleanupClassification === RiskCategory.LOW);
+    assert.ok(safe.length >= 2, 'the sample has several safe files');
+    const outside = state.artifacts.find((a) => a.cleanupClassification === RiskCategory.REVIEW);
+    const review = service.prepareCleanupReview(safe.map((a) => a.id));
+    assert.equal(review.totalEligibleCount, safe.length);
+
+    // The app writes to one of them while the dialog is open
+    const changed = safe[0];
+    fs.appendFileSync(changed.canonicalPath, '\nwritten after the review\n');
+
+    const result = service.executeQuarantine({
+      // A file the review did not list is never moved by its token
+      artifactIds: [...safe.map((a) => a.id), outside.id],
+      confirmationToken: review.confirmationToken
+    });
+    assert.equal(result.quarantinedEntries.length, safe.length - 1);
+    assert.equal(result.leftSinceReview, 1);
+    assert.equal(result.blockedItems.length, 1);
+    assert.equal(result.blockedItems[0].artifactId, changed.id);
+    assert.equal(result.blockedItems[0].code, 'FILE_CHANGED_SINCE_SCAN');
+    assert.equal(fs.existsSync(changed.canonicalPath), true, 'the changed file stayed');
+    assert.equal(fs.existsSync(outside.canonicalPath), true, 'the unlisted file stayed');
+
+    // The confirmation is used once
+    assert.throws(
+      () => service.executeQuarantine({ artifactIds: [changed.id], confirmationToken: review.confirmationToken }),
+      /EXPLICIT_CONFIRMATION_REQUIRED/
+    );
+
+    // A changed file is held back until a new scan sees it as it is now
+    const stale = service.prepareCleanupReview([changed.id]);
+    assert.equal(stale.totalEligibleCount, 0, 'the changed file is held back until a new scan');
+  } finally {
+    sandbox.cleanup();
+  }
+});

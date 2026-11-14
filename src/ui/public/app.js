@@ -3568,6 +3568,9 @@ async function openCleanupReviewModal(allowHighRiskSingleOverride = false) {
     const confirmBtn = document.getElementById('confirm-quarantine-btn');
 
     confirmBtn.disabled = review.totalEligibleCount === 0;
+    confirmBtn.classList.remove('hidden');
+    document.getElementById('cancel-cleanup-modal-btn').textContent = 'Cancel';
+    document.getElementById('cleanup-modal-title').textContent = 'Move to Quarantine';
 
     const eligibleHtml = review.eligibleItems
       .map(
@@ -3655,6 +3658,58 @@ async function openCleanupReviewModal(allowHighRiskSingleOverride = false) {
   }
 }
 
+/** Why a file stayed, in words: what the check found, without inode numbers or modes. */
+function reasonFileStayed(item) {
+  switch (item.code) {
+    case 'FILE_CHANGED_SINCE_SCAN':
+      return 'Changed after the scan: its app wrote to it, so it may be in use.';
+    case 'SESSION_MAY_BE_RUNNING':
+      return 'Its session became active again, so it may be in use.';
+    default:
+      return plain((item.reasons || []).join(' ')) || 'It did not pass the check right before the move.';
+  }
+}
+
+/**
+ * After a move in which some reviewed files changed in the meantime: the dialog stays open
+ * and lists those files, which stayed where they were. A new scan sees them as they are now.
+ */
+function showFilesLeftSinceReview(movedCount, items, leftCount) {
+  const body = document.getElementById('cleanup-review-modal-body');
+  const shown = items.slice(0, 300);
+  document.getElementById('cleanup-modal-title').textContent = 'Some Files Stayed';
+  document.getElementById('confirm-quarantine-btn').classList.add('hidden');
+  document.getElementById('cancel-cleanup-modal-btn').textContent = 'Done';
+  body.innerHTML = `
+    <div class="review-summary">
+      <div class="review-summary-head">
+        <span>${pluralize(movedCount, 'file')} moved to Quarantine</span>
+        <span>${pluralize(leftCount, 'file')} stayed</span>
+      </div>
+      <div class="row-detail">These files changed between the review and the move, so they were not moved. Scan again to see them as they are now${
+        leftCount > shown.length ? `; the first ${shown.length} are listed` : ''
+      }.</div>
+    </div>
+    <div>
+      <div class="field-label">Changed since the review</div>
+      ${shown
+        .map(
+          (b) => `
+          <div class="evidence-card">
+            <div class="evidence-card-header">
+              <span>${escapeHtml(b.name || '')}</span>
+              ${riskBadge(b.riskCategory)}
+            </div>
+            ${b.canonicalPath ? `<div class="row-path mono">${escapeHtml(b.canonicalPath)}</div>` : ''}
+            <div class="row-detail">${reasonFileStayed(b)}</div>
+          </div>`
+        )
+        .join('')}
+    </div>
+  `;
+  body.scrollTop = 0;
+}
+
 /* =========================================================================
    MODAL DIALOG HANDLERS
    ========================================================================= */
@@ -3696,7 +3751,12 @@ function bindModalEvents() {
         allowHighRiskSingleOverride: uiState.allowHighRiskSingleOverride
       });
 
-      closeCleanup();
+      const leftFiles = res.leftSinceReview > 0 ? res.blockedItems || [] : [];
+      if (leftFiles.length > 0) {
+        showFilesLeftSinceReview(res.quarantinedEntries.length, leftFiles, res.leftSinceReview);
+      } else {
+        closeCleanup();
+      }
       uiState.activeState = res.activeState;
       uiState.quarantineEntries = res.quarantineEntries || [];
       clearNodeSelection();
@@ -3708,7 +3768,13 @@ function bindModalEvents() {
 
       showToast(`Moved ${pluralize(res.quarantinedEntries.length, 'file')} to Quarantine.`);
     } catch (err) {
-      showToast(`Could not move to Quarantine: ${err.message}`);
+      const expired = /EXPLICIT_CONFIRMATION_REQUIRED/.test(err.message || '');
+      showToast(
+        expired
+          ? 'The review is out of date (files changed, or it was open over ten minutes). Nothing was moved. Review the selection again.'
+          : `Could not move to Quarantine: ${err.message}`
+      );
+      if (expired) closeCleanup();
     }
   });
 

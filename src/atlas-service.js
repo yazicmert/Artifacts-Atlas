@@ -538,18 +538,72 @@ export class ArtifactAtlasService {
       selectionSize
     });
     const blockedItems = [...(review.blockedItems || []), ...blocked];
+    // What the user is about to confirm: exactly these files, under these rules, for ten minutes
+    this.pendingCleanupReview = review.confirmationToken
+      ? {
+          token: review.confirmationToken,
+          eligibleIds: new Set(review.eligibleItems.map((i) => i.artifactId)),
+          allowHighRiskSingleOverride,
+          selectionSize,
+          preparedAt: Date.now()
+        }
+      : null;
     return { ...review, blockedItems, totalBlockedCount: blockedItems.length };
   }
 
-  executeQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false }) {
-    const { allowed: selected, selectionSize } = this.splitBySessionActivity(artifactIds);
-    const result = this.cleanupEngine.executeQuarantine({
-      selectionSize,
-      artifacts: selected,
-      authorizedRoots: this.activeState.authorizedRoots,
-      confirmationToken,
-      allowHighRiskSingleOverride
-    });
+  /**
+   * Moves the files of a confirmed review. With the review this window just showed, only the
+   * files it listed as eligible can move, and each is checked again now: a file that changed,
+   * vanished or whose session became active since the review stays where it is and is reported,
+   * while the others move. Any other token (such as the command line's, from another process)
+   * must match a fresh review of the whole selection.
+   */
+  executeQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false, now = Date.now() }) {
+    const pending = this.pendingCleanupReview;
+    const fromReview =
+      pending && confirmationToken && confirmationToken === pending.token && now - pending.preparedAt <= 10 * 60 * 1000;
+
+    let result;
+    if (fromReview) {
+      this.pendingCleanupReview = null;
+      const { allowed, blocked: running } = this.splitBySessionActivity(artifactIds);
+      const confirmed = allowed.filter((a) => pending.eligibleIds.has(a.id));
+      const recheck = this.cleanupEngine.prepareCleanupReview({
+        artifacts: confirmed,
+        authorizedRoots: this.activeState.authorizedRoots,
+        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride,
+        selectionSize: pending.selectionSize
+      });
+      const stillThere = new Set(this.activeState.artifacts.filter((a) => !a.quarantined).map((a) => a.id));
+      const dropped = [
+        ...recheck.blockedItems,
+        ...running.filter((b) => pending.eligibleIds.has(b.artifactId))
+      ];
+      const missing = [...pending.eligibleIds].filter((id) => !stillThere.has(id)).length;
+      if (!recheck.confirmationToken) {
+        result = { batchId: null, quarantinedEntries: [], blockedItems: dropped };
+      } else {
+        const eligible = new Set(recheck.eligibleItems.map((i) => i.artifactId));
+        const moved = this.cleanupEngine.executeQuarantine({
+          selectionSize: pending.selectionSize,
+          artifacts: confirmed.filter((a) => eligible.has(a.id)),
+          authorizedRoots: this.activeState.authorizedRoots,
+          confirmationToken: recheck.confirmationToken,
+          allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride
+        });
+        result = { ...moved, blockedItems: [...dropped, ...(moved.blockedItems || [])] };
+      }
+      result.leftSinceReview = result.blockedItems.length + missing;
+    } else {
+      const { allowed: selected, selectionSize } = this.splitBySessionActivity(artifactIds);
+      result = this.cleanupEngine.executeQuarantine({
+        selectionSize,
+        artifacts: selected,
+        authorizedRoots: this.activeState.authorizedRoots,
+        confirmationToken,
+        allowHighRiskSingleOverride
+      });
+    }
 
     // Refresh Knowledge Graph and Treemap after quarantining items
     this.rebuildActiveGraph();
