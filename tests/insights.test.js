@@ -127,6 +127,16 @@ test('G3. Diagnostics hold field names and types only: no prompt, value, ID or p
     db.prepare('INSERT INTO cursorDiskKV VALUES (?, ?)').run(`composerData:${UUID}`, JSON.stringify({ text: SECRET, files: { [`/Users/me/${UUID}.js`]: 1, 'billing-plan.md': 2 }, owner: { 'jane@example.com': true } }));
     db.close();
 
+    // Cursor's agent transcripts: layout only; Codex's database: table and column names only
+    const transcripts = path.join(home, '.cursor', 'projects', 'Users-me-billing', 'agent-transcripts');
+    fs.mkdirSync(transcripts, { recursive: true });
+    fs.writeFileSync(path.join(transcripts, `${UUID}.txt`), SECRET);
+    fs.writeFileSync(path.join(transcripts, `${UUID}.jsonl`), JSON.stringify({ role: 'user', text: SECRET }) + '\n');
+    const state = new DatabaseSync(path.join(home, '.codex', 'state_5.sqlite'));
+    state.exec('CREATE TABLE threads (id TEXT, title TEXT)');
+    state.prepare('INSERT INTO threads VALUES (?, ?)').run(UUID, SECRET);
+    state.close();
+
     const text = buildDiagnostics({
       state: { application: { name: 'Codex' }, artifacts: [{ artifactType: 'UNKNOWN', canonicalPath: path.join(home, 'Library', 'Big', 'blob.bin'), extension: '.bin', sizeBytes: 5 * 1024 * 1024 }] },
       homeDir: home,
@@ -137,6 +147,10 @@ test('G3. Diagnostics hold field names and types only: no prompt, value, ID or p
     assert.match(text, /session_meta/);
     assert.match(text, /composerData:<id>/);
     assert.match(text, /"text": "string"/);
+    assert.match(text, /<project>\/agent-transcripts\/<id>\.txt/);
+    assert.match(text, /"role": "string"/);
+    assert.match(text, /threads/);
+    assert.match(text, /title:TEXT/);
     assert.doesNotMatch(text, /billing|3f2a1b4c|\/Users\/me|jane|example\.com/);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
