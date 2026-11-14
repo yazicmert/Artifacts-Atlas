@@ -292,3 +292,55 @@ test('A large move runs in the background: the server keeps answering, other cle
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
   }
 });
+
+test('Review first by folder: groups instead of files, a group selects its files, Keep is remembered', async () => {
+  const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-review-groups-'));
+  const { server, shutdown, sessionToken } = createAtlasServer({ sandboxRoot, dataDir: sandboxRoot, scheduledDeletions: false, simulateSystemOpen: true });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (p, body) => {
+    const res = await fetch(`${base}${p}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-Atlas-Token': sessionToken },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return { status: res.status, data: await res.json() };
+  };
+  try {
+    const home = path.join(fs.realpathSync(sandboxRoot), 'sandbox-home');
+    // Two sessions' working files in one folder pattern, under the app's .tmp
+    for (const sid of ['3f2a1b4c-1111-2222-3333-444455556666', '7e9d0c1b-aaaa-bbbb-cccc-ddddeeeeffff']) {
+      for (let i = 0; i < 5; i++) {
+        const f = path.join(home, '.claude', 'work', sid, 'out', `part-${i}.bin`);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, 'x'.repeat(100));
+      }
+    }
+    const claude = (await call('/api/bootstrap')).data.availableBundles.find((b) => b.name === 'Claude Code');
+    await call('/api/scan/start', { bundlePath: claude.bundlePath });
+    const review = (await call('/api/review-groups')).data.review;
+    const work = review.groups.find((g) => g.label.endsWith('/.claude/work/*/out'));
+    assert.ok(work, 'the two sessions\' folders are one group');
+    assert.equal(work.count, 10);
+    assert.ok(!('artifactIds' in work), 'file ids stay on the server');
+    assert.ok(work.examples.length > 0 && work.examples.length <= 3);
+
+    const sel = (await call('/api/selection/resolve', { kind: 'review-group', groupId: work.id })).data;
+    assert.equal(sel.artifactIds.length, 10);
+    const shown = await call('/api/finder/reveal', { targetId: `review-group:${work.id}` });
+    assert.equal(shown.status, 200);
+    assert.ok(shown.data.path.endsWith(path.join('.claude', 'work')), 'the folder before the session IDs');
+
+    const kept = (await call('/api/review-groups/keep', { groupId: work.id })).data.review;
+    assert.ok(!kept.groups.some((g) => g.id === work.id));
+    assert.ok(kept.kept.some((g) => g.id === work.id));
+    // Remembered across a new scan
+    await call('/api/scan/start', { bundlePath: claude.bundlePath });
+    assert.ok((await call('/api/review-groups')).data.review.kept.some((g) => g.id === work.id));
+    const again = (await call('/api/review-groups/keep', { groupId: work.id, keep: false })).data.review;
+    assert.ok(again.groups.some((g) => g.id === work.id));
+  } finally {
+    await shutdown();
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});

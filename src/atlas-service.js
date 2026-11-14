@@ -34,6 +34,7 @@ import { readSessionFirstPrompt, promptExcerpt } from './provenance/session-prom
 import { computePromptCosts } from './graph/prompt-costs.js';
 import { summarizeScanForHistory, compareScans } from './graph/scan-history.js';
 import { sessionLabel } from './graph/report.js';
+import { buildReviewGroups } from './graph/review-groups.js';
 
 // Upper bound on files in one scan. The map and the UI stay responsive well beyond this
 // because they work from summaries; the bound keeps memory and scan time predictable.
@@ -732,6 +733,19 @@ export class ArtifactAtlasService {
       dayChoices: UNUSED_DAY_CHOICES,
       ...this.stageScheduledCleanup(candidates, { scheduledBy: SCHEDULED_BY_UNUSED_CLEANUP, now, preview })
     };
+  }
+
+  /**
+   * Review-first files grouped by folder, so they are decided a group at a time. Worked out once
+   * per scan, move or restore (the cache is keyed by what can change them).
+   */
+  reviewGroups({ kept = new Set(), now = Date.now() } = {}) {
+    const state = this.activeState;
+    const stamp = `${state.scan?.id || ''}:${(state.artifacts || []).reduce((n, a) => n + (a.quarantined ? 1 : 0), 0)}:${[...kept].sort().join('|')}`;
+    if (!this.reviewGroupsCache || this.reviewGroupsCache.stamp !== stamp || this.reviewGroupsCache.artifacts !== state.artifacts) {
+      this.reviewGroupsCache = { stamp, artifacts: state.artifacts, result: buildReviewGroups(state, { kept, now }) };
+    }
+    return this.reviewGroupsCache.result;
   }
 
   /** Suggested cleanups for the Insights card: folders of the app's own files left untouched. */

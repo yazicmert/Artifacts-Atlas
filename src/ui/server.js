@@ -44,6 +44,7 @@ import { readWindowsAppIconPng } from '../discovery/windows-icon.js';
 import { buildMapLevel, levelArtifactIds, searchFiles } from '../graph/map-levels.js';
 import { sessionLeftoverIds } from '../graph/prompt-costs.js';
 import { measureSharedCaches } from '../graph/shared-caches.js';
+import { reviewGroupsForClient, reviewGroupFolder } from '../graph/review-groups.js';
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from '../platform/update-check.js';
 import {
   findRunningAppBundle,
@@ -162,6 +163,8 @@ export function createAtlasServer(options = {}) {
             : null,
         scanPermissionsReviewedAt:
           typeof raw.scanPermissionsReviewedAt === 'string' ? raw.scanPermissionsReviewedAt : null,
+        // Review-first groups the user chose to keep, by app: { appKey: [group keys] }
+        keptReviewGroups: raw.keptReviewGroups && typeof raw.keptReviewGroups === 'object' ? raw.keptReviewGroups : {},
         // What the last scheduled deletion did, told once on the next start
         lastScheduledDeletion:
           raw.lastScheduledDeletion && typeof raw.lastScheduledDeletion.at === 'string' ? raw.lastScheduledDeletion : null
@@ -174,6 +177,7 @@ export function createAtlasServer(options = {}) {
         scanScope: normalizeScanScope(null),
         pendingUpdate: null,
         scanPermissionsReviewedAt: null,
+        keptReviewGroups: {},
         lastScheduledDeletion: null
       };
     }
@@ -526,6 +530,12 @@ export function createAtlasServer(options = {}) {
   // File ids for a selection the user made by description rather than one by one.
   const resolveSelection = (state, body) => {
     const live = (state.artifacts || []).filter((a) => !a.quarantined);
+    if (body.kind === 'review-group' && typeof body.groupId === 'string') {
+      const group = findReviewGroup(activeService(), body.groupId);
+      if (!group) return [];
+      const ids = new Set(group.artifactIds);
+      return (state.artifacts || []).filter((a) => ids.has(a.id) && !a.quarantined && a.cleanupClassification === 'REVIEW').map((a) => a.id);
+    }
     if (body.kind === 'safe') {
       return live.filter((a) => a.cleanupClassification === 'LOW').map((a) => a.id);
     }
@@ -666,8 +676,21 @@ export function createAtlasServer(options = {}) {
   // listed can be shown; the client never names a path here.
   // Caches AI tools share, measured when the user asks; kept per service (sample or real home)
   const sharedCachesByService = new WeakMap();
+  // Review-first groups the user kept, for the app now scanned
+  const appKeyOf = (state) => state?.application?.bundleId || state?.application?.name || 'none';
+  const keptGroupsOf = (state) => new Set(Array.isArray(settings.keptReviewGroups?.[appKeyOf(state)]) ? settings.keptReviewGroups[appKeyOf(state)] : []);
+  const reviewGroupsOf = (service) => service.reviewGroups({ kept: keptGroupsOf(service.activeState), now: clock() });
+  const findReviewGroup = (service, id) => {
+    const r = reviewGroupsOf(service);
+    return [...r.groups, ...r.kept].find((g) => g.id === id) || null;
+  };
   const revealPathForId = (state, id) => {
     if (!state) return null;
+    const rg = /^review-group:(rg_[0-9a-f]{16})$/.exec(id);
+    if (rg) {
+      const group = findReviewGroup(activeService(), rg[1]);
+      return group ? reviewGroupFolder(group) : null;
+    }
     const shared = /^shared-cache:(.+)$/.exec(id);
     if (shared) {
       const row = (sharedCachesByService.get(activeService())?.caches || []).find((c) => c.id === shared[1]);
@@ -1152,6 +1175,25 @@ export function createAtlasServer(options = {}) {
         fs.writeFileSync(csvPath, reportCsv(data));
         const shown = await activeService().platformServices.revealInFinder(htmlPath, { simulate: Boolean(options.simulateSystemOpen) });
         return sendJson(res, 200, { ok: true, htmlPath, csvPath, shown: shown.ok });
+      }
+
+      // Review-first files by folder: one decision per group (move to the Quarantine, or keep)
+      if (url.pathname === '/api/review-groups' && req.method === 'GET') {
+        const r = reviewGroupsForClient(reviewGroupsOf(activeService()));
+        return sendJson(res, 200, { ok: true, review: { ...r, homeDir: activeService().platformServices.homeDir } });
+      }
+      if (url.pathname === '/api/review-groups/keep' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const service = activeService();
+        const group = findReviewGroup(service, String(body.groupId || ''));
+        if (!group) return sendJson(res, 404, { ok: false, error: 'UNKNOWN_GROUP' });
+        const app = appKeyOf(service.activeState);
+        const keys = new Set(keptGroupsOf(service.activeState));
+        if (body.keep === false) keys.delete(group.key);
+        else keys.add(group.key);
+        settings.keptReviewGroups = { ...(settings.keptReviewGroups || {}), [app]: [...keys].slice(0, 500) };
+        saveSettings();
+        return sendJson(res, 200, { ok: true, review: reviewGroupsForClient(reviewGroupsOf(service)) });
       }
 
       if (url.pathname === '/api/insights/shared-caches' && req.method === 'GET') {
