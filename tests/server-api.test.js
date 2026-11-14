@@ -238,3 +238,57 @@ test('Spawned backend lifecycle: starts on loopback port 0 and shuts down cleanl
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('A large move runs in the background: the server keeps answering, other cleanups wait, the result is taken once', async () => {
+  const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-server-move-'));
+  const { server, shutdown, sessionToken } = createAtlasServer({ sandboxRoot, dataDir: sandboxRoot, scheduledDeletions: false });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (p, body) => {
+    const res = await fetch(`${base}${p}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-Atlas-Token': sessionToken },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return { status: res.status, data: await res.json() };
+  };
+  try {
+    const boot = (await call('/api/bootstrap')).data;
+    const claude = boot.availableBundles.find((b) => b.name === 'Claude Code');
+    // Many safe cache files in the sample, so the move takes a while
+    const cache = path.join(fs.realpathSync(sandboxRoot), 'sandbox-home', 'Library', 'Caches', 'com.anthropic.claudefordesktop', 'Cache_Data');
+    fs.mkdirSync(cache, { recursive: true });
+    for (let i = 0; i < 3000; i++) fs.writeFileSync(path.join(cache, `f_${i}`), 'x');
+    assert.equal((await call('/api/scan/start', { bundlePath: claude.bundlePath })).data.ok, true);
+    const ids = (await call('/api/selection/resolve', { kind: 'safe' })).data.artifactIds;
+    assert.ok(ids.length >= 3000);
+    const review = (await call('/api/cleanup/review', { artifactIds: ids })).data.review;
+    assert.ok(review.confirmationToken);
+
+    const started = await call('/api/cleanup/quarantine', { artifactIds: ids, confirmationToken: review.confirmationToken, background: true });
+    assert.equal(started.status, 202);
+    // While it runs: other requests are answered, and another cleanup or a restore waits
+    assert.equal((await call('/api/health')).status, 200);
+    const busy = await call('/api/cleanup/restore', { entryId: 'x' });
+    if (busy.status === 409) assert.match(busy.data.error, /BUSY_MOVING/);
+
+    let progress = (await call('/api/cleanup/quarantine/progress')).data;
+    for (let i = 0; i < 600 && progress.progress; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      progress = (await call('/api/cleanup/quarantine/progress')).data;
+    }
+    assert.equal(progress.finished, true);
+    const result = await call('/api/cleanup/quarantine/result');
+    assert.equal(result.status, 200);
+    assert.equal(result.data.quarantinedEntries.length, ids.length);
+    assert.equal((await call('/api/cleanup/quarantine/result')).status, 404, 'the result is taken once');
+
+    // Put Back works once the move is done
+    const entry = result.data.quarantineEntries[0];
+    const restored = await call('/api/cleanup/restore', { entryId: entry.id });
+    assert.equal(restored.status, 200);
+  } finally {
+    await shutdown();
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});

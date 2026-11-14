@@ -560,8 +560,24 @@ export function createAtlasServer(options = {}) {
   // Deletions the user scheduled with the unused-files cleanup: checked shortly after start and
   // every hour while the app is open, for every vault in use (see runScheduledDeletions)
   const clock = options.now || (() => Date.now());
+  // The one move (or deletion) running now, with its progress. Files move in batches and the
+  // app keeps answering meanwhile; anything else that moves, restores, deletes or rescans waits.
+  let moveJob = null;
+  // The outcome of a move started in the background, until the window takes it
+  let lastMoveResult = null;
+  const GUARDED_WHILE_MOVING = new Set([
+    '/api/cleanup/quarantine',
+    '/api/cleanup/unused',
+    '/api/cleanup/restore',
+    '/api/quarantine/restore-batch',
+    '/api/quarantine/purge',
+    '/api/quarantine/run-scheduled',
+    '/api/scan/start'
+  ]);
   const runScheduledDeletions = async () => {
     const total = { deleted: 0, freedBytes: 0, neededAgain: 0 };
+    // Never while files are moving; the next hourly check picks it up
+    if (moveJob) return total;
     for (const service of services.values()) {
       try {
         const r = await service.cleanupEngine.runScheduledDeletions({ now: clock() });
@@ -589,7 +605,6 @@ export function createAtlasServer(options = {}) {
   const scheduledDeletionInterval = options.scheduledDeletions === false ? null : setInterval(runScheduledDeletions, 60 * 60 * 1000);
   scheduledDeletionTimer?.unref?.();
   scheduledDeletionInterval?.unref?.();
-  let unusedCleanupProgress = null;
   // Told once: the first bootstrap after it happened gets it, then it is cleared
   const takeScheduledDeletionNotice = () => {
     const notice = settings.lastScheduledDeletion;
@@ -845,6 +860,16 @@ export function createAtlasServer(options = {}) {
         return sendJson(res, securityCheck.status, {
           ok: false,
           error: securityCheck.error
+        });
+      }
+
+      if (moveJob && req.method === 'POST' && GUARDED_WHILE_MOVING.has(url.pathname)) {
+        return sendJson(res, 409, {
+          ok: false,
+          error: moveJob.total
+            ? `BUSY_MOVING: Files are still moving to the Quarantine (${moveJob.done.toLocaleString('en-US')} of ${moveJob.total.toLocaleString('en-US')}). Try again when it has finished.`
+            : 'BUSY_MOVING: A cleanup is still running. Try again when it has finished.',
+          progress: moveJob
         });
       }
 
@@ -1227,17 +1252,41 @@ export function createAtlasServer(options = {}) {
 
       if (url.pathname === '/api/cleanup/quarantine' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const result = activeService().executeQuarantine({
-          artifactIds: body.artifactIds || [],
-          confirmationToken: body.confirmationToken,
-          allowHighRiskSingleOverride: Boolean(body.allowHighRiskSingleOverride)
-        });
-        return sendJson(res, 200, {
-          ok: true,
-          ...result,
-          updatedGraph: undefined,
-          activeState: stateForClient(activeService().activeState)
-        });
+        moveJob = { kind: 'quarantine', done: 0, total: Array.isArray(body.artifactIds) ? body.artifactIds.length : 0 };
+        lastMoveResult = null;
+        const service = activeService();
+        const run = service
+          .executeQuarantineAsync(
+            {
+              artifactIds: body.artifactIds || [],
+              confirmationToken: body.confirmationToken,
+              allowHighRiskSingleOverride: Boolean(body.allowHighRiskSingleOverride)
+            },
+            { onProgress: (p) => (moveJob = { kind: 'quarantine', ...p }) }
+          )
+          .then((result) => ({ ok: true, ...result, updatedGraph: undefined, activeState: stateForClient(service.activeState) }))
+          .catch((err) => ({ ok: false, error: err.message }))
+          .finally(() => {
+            moveJob = null;
+          });
+        // The window asks for the result when the move is done, so a long move never runs into
+        // a request time limit; without `background` the answer waits for the move
+        if (body.background) {
+          run.then((outcome) => (lastMoveResult = outcome));
+          return sendJson(res, 202, { ok: true, started: true, progress: moveJob });
+        }
+        const outcome = await run;
+        return sendJson(res, outcome.ok ? 200 : 500, outcome);
+      }
+      if (url.pathname === '/api/cleanup/quarantine/progress' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, progress: moveJob, finished: !moveJob && Boolean(lastMoveResult) });
+      }
+      if (url.pathname === '/api/cleanup/quarantine/result' && req.method === 'GET') {
+        if (moveJob) return sendJson(res, 409, { ok: false, error: 'BUSY_MOVING: The move has not finished yet.' });
+        const outcome = lastMoveResult;
+        lastMoveResult = null;
+        if (!outcome) return sendJson(res, 404, { ok: false, error: 'NO_MOVE_RESULT' });
+        return sendJson(res, outcome.ok ? 200 : 409, outcome);
       }
 
       // The unused-files cleanup: the list of safe files unused for N days, then the confirmed
@@ -1265,17 +1314,17 @@ export function createAtlasServer(options = {}) {
       if (url.pathname === '/api/cleanup/unused' && req.method === 'POST') {
         const body = await readJsonBody(req);
         try {
-          unusedCleanupProgress = { done: 0, total: 0 };
-          const result = await activeService().executeUnusedCleanup({ token: body.token, now: clock(), onProgress: (p) => (unusedCleanupProgress = p) });
+          moveJob = { kind: 'scheduled', done: 0, total: 0 };
+          const result = await activeService().executeUnusedCleanup({ token: body.token, now: clock(), onProgress: (p) => (moveJob = { kind: 'scheduled', ...p }) });
           return sendJson(res, 200, { ok: true, ...result, activeState: stateForClient(activeService().activeState) });
         } catch (err) {
           return sendJson(res, 409, { ok: false, error: err.message });
         } finally {
-          unusedCleanupProgress = null;
+          moveJob = null;
         }
       }
       if (url.pathname === '/api/cleanup/unused/progress' && req.method === 'GET') {
-        return sendJson(res, 200, { ok: true, progress: unusedCleanupProgress });
+        return sendJson(res, 200, { ok: true, progress: moveJob });
       }
       if (url.pathname === '/api/quarantine/restore-batch' && req.method === 'POST') {
         const body = await readJsonBody(req);
@@ -1294,10 +1343,13 @@ export function createAtlasServer(options = {}) {
       if (url.pathname === '/api/quarantine/purge' && req.method === 'POST') {
         const body = await readJsonBody(req);
         try {
+          moveJob = { kind: 'purge', done: 0, total: 0 };
           const result = await activeService().purgeQuarantine({ token: body.token });
           return sendJson(res, 200, { ok: true, ...result });
         } catch (err) {
           return sendJson(res, 409, { ok: false, error: err.message });
+        } finally {
+          moveJob = null;
         }
       }
 

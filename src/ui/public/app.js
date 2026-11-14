@@ -3472,7 +3472,7 @@ function renderQuarantineVaultView() {
             : 'Put back.'
         );
       } catch (err) {
-        showToast(`Could not put it back: ${err.message}`);
+        showToast(`Could not put it back: ${String(err.message || '').replace(/^BUSY_MOVING: /, '')}`);
       }
     });
   });
@@ -3691,6 +3691,7 @@ function bindContextualToolbarEvents() {
 async function openCleanupReviewModal(allowHighRiskSingleOverride = false) {
   const artifactIds = Array.from(uiState.selectedArtifactIds);
   if (artifactIds.length === 0) return;
+  if (artifactIds.length > 2000) showToast(`Checking ${artifactIds.length.toLocaleString()} files…`);
 
   try {
     uiState.allowHighRiskSingleOverride = allowHighRiskSingleOverride;
@@ -3882,12 +3883,35 @@ function bindModalEvents() {
 
   document.getElementById('confirm-quarantine-btn').addEventListener('click', async () => {
     if (!uiState.pendingReview?.confirmationToken) return;
+    const confirmBtn = document.getElementById('confirm-quarantine-btn');
+    if (confirmBtn.disabled) return;
+    // A large selection takes minutes: the button says so and the count moves
+    const label = confirmBtn.textContent;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Moving…';
+    let progress = null;
     try {
-      const res = await apiRequest('/api/cleanup/quarantine', 'POST', {
+      // Started in the background; the window asks how far it is and takes the result at the end
+      await apiRequest('/api/cleanup/quarantine', 'POST', {
         artifactIds: Array.from(uiState.selectedArtifactIds),
         confirmationToken: uiState.pendingReview.confirmationToken,
-        allowHighRiskSingleOverride: uiState.allowHighRiskSingleOverride
+        allowHighRiskSingleOverride: uiState.allowHighRiskSingleOverride,
+        background: true
       });
+      await new Promise((resolve) => {
+        progress = setInterval(async () => {
+          try {
+            const state = await apiRequest('/api/cleanup/quarantine/progress', 'GET');
+            const p = state.progress;
+            if (p && p.total) confirmBtn.textContent = `Moving ${p.done.toLocaleString()} of ${p.total.toLocaleString()}…`;
+            if (!p) resolve();
+          } catch {
+            // Asked again on the next tick
+          }
+        }, 700);
+      });
+      clearInterval(progress);
+      const res = await apiRequest('/api/cleanup/quarantine/result', 'GET');
 
       const leftFiles = res.leftSinceReview > 0 ? res.blockedItems || [] : [];
       if (leftFiles.length > 0) {
@@ -3906,6 +3930,10 @@ function bindModalEvents() {
 
       showToast(`Moved ${pluralize(res.quarantinedEntries.length, 'file')} to Quarantine.`);
     } catch (err) {
+      if (/BUSY_MOVING/.test(err.message || '')) {
+        showToast(err.message.replace(/^BUSY_MOVING: /, ''));
+        return;
+      }
       const expired = /EXPLICIT_CONFIRMATION_REQUIRED/.test(err.message || '');
       showToast(
         expired
@@ -3913,6 +3941,10 @@ function bindModalEvents() {
           : `Could not move to Quarantine: ${err.message}`
       );
       if (expired) closeCleanup();
+    } finally {
+      if (progress) clearInterval(progress);
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = label;
     }
   });
 
