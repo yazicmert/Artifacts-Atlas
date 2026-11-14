@@ -757,3 +757,70 @@ test('S12. A confirmed review moves the files it listed; one that changed since 
     sandbox.cleanup();
   }
 });
+
+test('S13. Suggested cleanup: the app\'s own untouched folders, safe and review-first files, deleted after 7 days', async () => {
+  const sandbox = createTempSandbox();
+  try {
+    const demo = createDeterministicDemoEnvironment(sandbox.dir);
+    const service = new ArtifactAtlasService({
+      homeDir: demo.homeDir, platform: 'darwin',
+      dbPath: path.join(sandbox.dir, 'atlas.sqlite'),
+      quarantineRoot: path.join(sandbox.dir, 'quarantine-vault')
+    });
+    openServices.push(service);
+    const day = 24 * 60 * 60 * 1000;
+    const old = new Date(Date.now() - 20 * day);
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.isFile()) fs.utimesSync(p, old, old);
+      }
+    };
+    walk(demo.homeDir);
+    const state = await service.scanAndAnalyze({ bundlePath: demo.appBundles.claude.bundlePath });
+    const now = Date.now();
+
+    const plan = service.cleanupSuggestions({ now });
+    assert.equal(plan.minDays, 7);
+    assert.ok(plan.groups.length >= 1);
+    // What is never offered
+    const prepared = service.prepareSuggestedCleanup({ groupIds: plan.groups.map((g) => g.id), now });
+    const ids = new Set(service.pendingUnusedCleanup.ids);
+    for (const a of state.artifacts) {
+      if (!ids.has(a.id)) continue;
+      assert.ok(['LOW', 'REVIEW'].includes(a.cleanupClassification), `${a.name} is safe or review first`);
+      assert.equal(a.workspaceId, null, `${a.name} is not in a project`);
+      assert.notEqual(a.artifactType, 'SESSION_HISTORY');
+      assert.notEqual(a.provenanceConfidence, 'UNKNOWN');
+    }
+    assert.ok(prepared.reviewCount >= 1, 'review-first files of the app are offered');
+    assert.ok(prepared.count > prepared.reviewCount, 'and safe ones');
+    // A folder group names a place in the app's data folders
+    for (const g of plan.groups) assert.ok(state.authorizedRoots.some((r) => g.folder === r || g.folder.startsWith(r + path.sep)), g.folder);
+
+    // Files untouched for 7 days only: with 30 days nothing of a 20-day-old sample is offered
+    assert.equal(service.cleanupSuggestions({ minDays: 30, now }).groups.length, 0);
+
+    // A preview of the unused card never replaces the confirmation that is open
+    service.prepareUnusedCleanup({ now, preview: true });
+    const moved = await service.executeUnusedCleanup({ token: prepared.token, now });
+    assert.equal(moved.movedCount, prepared.count);
+    const held = service.sqliteStore.listQuarantineEntries('QUARANTINED');
+    assert.ok(held.every((e) => e.scheduledBy === 'suggested-cleanup' && e.autoPurgeAt === prepared.purgeAt));
+    assert.ok(held.some((e) => e.riskCategory === 'REVIEW'));
+
+    // Day 7: all deleted, review-first ones too, but only while row and manifest agree on risk
+    const [tampered, ...rest] = held;
+    const manifest = JSON.parse(fs.readFileSync(tampered.manifestPath, 'utf8'));
+    fs.writeFileSync(tampered.manifestPath, JSON.stringify({ ...manifest, riskCategory: 'HIGH' }));
+    const day7 = await service.cleanupEngine.runScheduledDeletions({ now: now + 7 * day + 1000 });
+    assert.equal(day7.deleted, rest.length);
+    assert.equal(day7.skipped, 1);
+    const byId = new Map(service.sqliteStore.listQuarantineEntries().map((e) => [e.id, e]));
+    assert.equal(byId.get(tampered.id).status, 'QUARANTINED');
+    for (const e of rest) assert.equal(byId.get(e.id).status, 'PURGED');
+  } finally {
+    sandbox.cleanup();
+  }
+});

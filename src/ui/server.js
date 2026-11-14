@@ -1225,7 +1225,23 @@ export function createAtlasServer(options = {}) {
       // move, with their deletion date
       if (url.pathname === '/api/cleanup/unused/prepare' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        return sendJson(res, 200, { ok: true, cleanup: activeService().prepareUnusedCleanup({ minDays: body.minDays, now: clock() }) });
+        return sendJson(res, 200, {
+          ok: true,
+          cleanup: activeService().prepareUnusedCleanup({ minDays: body.minDays, now: clock(), preview: Boolean(body.preview) })
+        });
+      }
+      // Suggested cleanups: folders of the app's own files left untouched, cleared in one step
+      if (url.pathname === '/api/cleanup/suggestions' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        return sendJson(res, 200, { ok: true, suggestions: activeService().cleanupSuggestions({ minDays: body.minDays, now: clock() }) });
+      }
+      if (url.pathname === '/api/cleanup/suggested/prepare' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter((id) => typeof id === 'string').slice(0, 100) : [];
+        return sendJson(res, 200, {
+          ok: true,
+          cleanup: activeService().prepareSuggestedCleanup({ groupIds, minDays: body.minDays, now: clock() })
+        });
       }
       if (url.pathname === '/api/cleanup/unused' && req.method === 'POST') {
         const body = await readJsonBody(req);

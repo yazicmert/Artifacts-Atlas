@@ -293,7 +293,7 @@ async function loadBootstrap() {
     const sd = boot.lastScheduledDeletion;
     if (sd && (sd.deleted || sd.neededAgain)) {
       setTimeout(() => showToast(
-        `${sd.deleted ? `Deleted ${pluralize(sd.deleted, 'unused file')} (${formatBytes(sd.freedBytes)}) that waited 7 days in Quarantine.` : ''}${
+        `${sd.deleted ? `Deleted ${pluralize(sd.deleted, 'file')} (${formatBytes(sd.freedBytes)}) that waited 7 days in Quarantine.` : ''}${
           sd.neededAgain ? ` ${pluralize(sd.neededAgain, 'file')} ${sd.neededAgain === 1 ? 'was' : 'were'} made again by ${sd.neededAgain === 1 ? 'its app and is' : 'their apps and are'} kept.` : ''
         }`.trim(), 8000), 800);
     }
@@ -2703,13 +2703,16 @@ function pastLimitCardHtml(scan) {
 async function renderInsightsView() {
   const body = document.getElementById('insights-body');
   if (!body || !uiState.activeState?.scan) return;
-  const [leftovers, copies, unused] = await Promise.all([
+  const [leftovers, copies, unused, suggestions] = await Promise.all([
     apiRequest('/api/project-leftovers', 'GET').then((r) => r.leftovers).catch(() => null),
     apiRequest('/api/insights/copies', 'GET').then((r) => r.copies).catch(() => null),
-    apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30 }).then((r) => r.cleanup).catch(() => null)
+    // A preview: it never replaces a confirmation that is open
+    apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30, preview: true }).then((r) => r.cleanup).catch(() => null),
+    apiRequest('/api/cleanup/suggestions', 'POST', { minDays: uiState.suggestionDays || 7 }).then((r) => r.suggestions).catch(() => null)
   ]);
-  uiState.unusedPlan = unused;
+  uiState.suggestions = suggestions;
   const cards = [
+    suggestionsCardHtml(suggestions),
     unusedCardHtml(unused),
     growthCardHtml(uiState.activeState.growth),
     pastLimitCardHtml(uiState.activeState.scan),
@@ -2724,6 +2727,63 @@ async function renderInsightsView() {
   if (copies?.status === 'running' && uiState.activeTab === 'insights') {
     uiState.copiesPoll = setTimeout(renderInsightsView, 800);
   }
+}
+
+/* Suggested cleanups: the app's own folders it has left untouched, each ticked by default and
+   cleared in one step. Unticking a folder leaves it out. */
+function suggestionsCardHtml(plan) {
+  if (!plan) return '';
+  const choices = (plan.dayChoices || [7, 30, 90])
+    .map((d) => `<option value="${d}"${d === plan.minDays ? ' selected' : ''}>${d} days</option>`)
+    .join('');
+  const picker = `<label class="unused-picker">Untouched for at least <select id="suggestion-days" class="filter-select">${choices}</select></label>`;
+  if (!plan.groups?.length) {
+    return insightCard('Suggested cleanup', `<div class="insight-split"><div><p class="insight-quiet">Nothing to suggest: the app has used all of its folders recently.</p></div><div>${picker}</div></div>`, { wide: true });
+  }
+  uiState.suggestionPicks = uiState.suggestionPicks || {};
+  const largest = Math.max(...plan.groups.map((g) => g.bytes), 1);
+  const rows = plan.groups
+    .map((g) => {
+      const on = uiState.suggestionPicks[g.id] !== false;
+      const mix = [g.safeCount ? `${g.safeCount} safe` : '', g.reviewCount ? `${g.reviewCount} review first` : ''].filter(Boolean).join(' · ');
+      return `
+        <label class="suggestion-row">
+          <input type="checkbox" data-suggestion="${escapeHtml(g.id)}"${on ? ' checked' : ''} />
+          <span class="suggestion-main">
+            <span class="suggestion-folder mono" title="${escapeHtml(g.folder)}">${escapeHtml(shortPath(g.folder))}</span>
+            <span class="suggestion-meta">${pluralize(g.count, 'file')} · ${escapeHtml(mix)}${g.newestChange ? ` · last changed ${escapeHtml(formatDate(g.newestChange))}` : ''}</span>
+            <span class="suggestion-bar"><span style="width:${Math.max(2, Math.round((g.bytes / largest) * 100))}%"></span></span>
+          </span>
+          <span class="insight-num">${formatBytes(g.bytes)}</span>
+        </label>`;
+    })
+    .join('');
+  const picked = plan.groups.filter((g) => uiState.suggestionPicks[g.id] !== false);
+  const pickedBytes = picked.reduce((sum, g) => sum + g.bytes, 0);
+  return insightCard(
+    'Suggested cleanup',
+    `<div class="insight-split">
+       <div>
+         <div class="insight-figure" id="suggestion-figure">${formatBytes(pickedBytes)}</div>
+         <div class="insight-meta" id="suggestion-meta">${pluralize(picked.length, 'folder')} picked, of ${formatBytes(plan.bytes)} the app has left untouched</div>
+         <button id="suggestion-clean-btn" class="primary-btn insight-cta" type="button"${picked.length ? '' : ' disabled'}>Clean Up…</button>
+       </div>
+       <div>${picker}</div>
+     </div>
+     <div class="suggestion-list">${rows}</div>
+     ${plan.otherGroups ? `<p class="insight-quiet">${pluralize(plan.otherGroups, 'smaller folder')} not listed.</p>` : ''}
+     <p class="insight-quiet">Only files the app keeps for itself: never your projects, protected or high-risk files, session records, or files of a session that may be running. They move to the Quarantine and are deleted after ${plan.deleteAfterDays} days; one the app makes again is kept.</p>`,
+    { wide: true }
+  );
+}
+
+function updateSuggestionPick() {
+  const plan = uiState.suggestions;
+  if (!plan?.groups) return;
+  const picked = plan.groups.filter((g) => uiState.suggestionPicks[g.id] !== false);
+  document.getElementById('suggestion-figure').textContent = formatBytes(picked.reduce((sum, g) => sum + g.bytes, 0));
+  document.getElementById('suggestion-meta').textContent = `${pluralize(picked.length, 'folder')} picked, of ${formatBytes(plan.bytes)} the app has left untouched`;
+  document.getElementById('suggestion-clean-btn').disabled = picked.length === 0;
 }
 
 /* Safe files nobody has used for a while: moved to the Quarantine together, deleted after 7 days
@@ -2757,11 +2817,21 @@ function unusedCardHtml(plan) {
 }
 
 async function openUnusedCleanup() {
+  await openScheduledCleanup(() => apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30 }));
+}
+
+async function openSuggestedCleanup() {
+  const groupIds = (uiState.suggestions?.groups || []).filter((g) => uiState.suggestionPicks[g.id] !== false).map((g) => g.id);
+  if (groupIds.length === 0) return;
+  await openScheduledCleanup(() => apiRequest('/api/cleanup/suggested/prepare', 'POST', { groupIds, minDays: uiState.suggestionDays || 7 }));
+}
+
+async function openScheduledCleanup(prepare) {
   let plan;
   try {
-    plan = (await apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30 })).cleanup;
+    plan = (await prepare()).cleanup;
   } catch (err) {
-    showToast(`Could not list unused files: ${err.message}`);
+    showToast(`Could not list the files: ${err.message}`);
     return;
   }
   if (!plan.token) {
@@ -2769,12 +2839,28 @@ async function openUnusedCleanup() {
     return;
   }
   uiState.unusedPlan = plan;
+  const suggested = plan.scheduledBy === 'suggested-cleanup';
   const date = formatDate(plan.purgeAt);
+  document.getElementById('unused-modal-title').textContent = suggested ? 'Suggested Cleanup' : 'Clean Up Unused Leftovers';
+  const what = suggested
+    ? `${pluralize(plan.count, 'file')} in ${pluralize(plan.folders.length, 'folder')}, untouched for ${plan.minDays} days`
+    : `${pluralize(plan.count, 'safe file')} unused for ${plan.minDays} days`;
+  const folders = suggested
+    ? `<div class="kv-list">${plan.folders
+        .map((f) => `<div class="kv-item"><span class="kv-key mono">${escapeHtml(shortPath(f.folder))}</span><span class="kv-val">${pluralize(f.count, 'file')} · ${formatBytes(f.bytes)}</span></div>`)
+        .join('')}</div>`
+    : '';
+  const reviewNote =
+    suggested && plan.reviewCount
+      ? `<p class="inspector-note">${pluralize(plan.reviewCount, 'file')} ${plan.reviewCount === 1 ? 'is' : 'are'} marked review first: the app keeps ${plan.reviewCount === 1 ? 'it' : 'them'} in its own folders but could not prove it can make ${plan.reviewCount === 1 ? 'it' : 'them'} again. If something stops working, put the cleanup back from the Quarantine.</p>`
+      : '';
   document.getElementById('unused-modal-body').innerHTML = `
     <div class="purge-total">
       <span class="purge-total-value">${formatBytes(plan.bytes)}</span>
-      <span class="purge-total-meta">${pluralize(plan.count, 'safe file')} unused for ${plan.minDays} days</span>
+      <span class="purge-total-meta">${what}</span>
     </div>
+    ${folders}
+    ${reviewNote}
     <div class="unused-steps">
       <div><strong>Now</strong><span>They move to the Quarantine, so their apps no longer see them.</span></div>
       <div><strong>Until ${escapeHtml(date)}</strong><span>You can put any or all of them back. If an app makes one again, that one is kept.</span></div>
@@ -2836,6 +2922,17 @@ function bindUnusedEvents() {
 
 function bindInsightsActions(box) {
   box.querySelector('#unused-clean-btn')?.addEventListener('click', openUnusedCleanup);
+  box.querySelector('#suggestion-clean-btn')?.addEventListener('click', openSuggestedCleanup);
+  box.querySelector('#suggestion-days')?.addEventListener('change', (e) => {
+    uiState.suggestionDays = Number(e.target.value);
+    renderInsightsView();
+  });
+  box.querySelectorAll('[data-suggestion]').forEach((input) =>
+    input.addEventListener('change', () => {
+      uiState.suggestionPicks[input.dataset.suggestion] = input.checked;
+      updateSuggestionPick();
+    })
+  );
   box.querySelector('#unused-days')?.addEventListener('change', (e) => {
     uiState.unusedDays = Number(e.target.value);
     renderInsightsView();
@@ -3222,7 +3319,7 @@ function renderQuarantineVaultView() {
   const scheduled = new Map();
   const single = [];
   for (const entry of uiState.quarantineEntries) {
-    if (entry.status === 'QUARANTINED' && entry.scheduledBy === 'unused-cleanup') {
+    if (entry.status === 'QUARANTINED' && (entry.scheduledBy === 'unused-cleanup' || entry.scheduledBy === 'suggested-cleanup')) {
       if (!scheduled.has(entry.batchId)) scheduled.set(entry.batchId, []);
       scheduled.get(entry.batchId).push(entry);
     } else {
@@ -3239,7 +3336,7 @@ function renderQuarantineVaultView() {
     row.innerHTML = `
       <div class="quarantine-row-main">
         <div class="quarantine-row-title">
-          <strong>Unused leftovers</strong>
+          <strong>${entries[0].scheduledBy === 'suggested-cleanup' ? 'Suggested cleanup' : 'Unused leftovers'}</strong>
           <span>${pluralize(entries.length, 'file')} · ${formatBytes(entries.reduce((s, e) => s + (e.sizeBytes || 0), 0))}</span>
           <span class="metric-label">Removed ${escapeHtml(formatDate(entries[0].quarantinedAt))}</span>
         </div>

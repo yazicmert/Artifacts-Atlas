@@ -1986,3 +1986,55 @@ button.crumb:hover {
   font-size: 12.5px;
   color: var(--ink-2);
 }
+
+/* ---------- Suggested cleanup ---------- */
+
+.suggestion-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.suggestion-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.suggestion-row input {
+  margin-top: 2px;
+  flex: none;
+}
+.suggestion-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.suggestion-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.suggestion-meta {
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+.suggestion-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+  max-width: 260px;
+}
+.suggestion-bar span {
+  display: block;
+  height: 100%;
+  background: var(--ink-3);
+}
