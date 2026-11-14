@@ -56,7 +56,7 @@ Artifact Atlas runs on your computer and reads nothing until you allow it. It ne
 
 ## From inside your AI app
 
-Clone this repository and open it in Claude Code, Codex or Cursor: the **artifact-atlas** skill loads on its own. Ask *"What have you left on my disk?"* and the agent asks once before reading, then shows what that app left behind: totals, what is safe to remove, the largest kinds and the sessions that left the most.
+Clone this repository and open it in Claude Code, Codex or Cursor: the **artifact-atlas** skill loads on its own. Ask *"What have you left on my disk?"* and the agent asks once before reading, then shows what that app left behind as text bar charts: totals, what is safe to remove, the largest kinds and the sessions that left the most.
 
 ```bash
 git clone https://github.com/yazicmert/basket.git && cd basket && claude
@@ -86,7 +86,7 @@ npm test     # runs on Linux, macOS and Windows
 <summary>Command line and building the apps</summary>
 <br />
 
-**Command line.** `node src/cli.js leftovers --app claude --read-home` sums up what an AI app left (`--session <id>`, `--details`, `--json`). `node src/cli.js quarantine <file> --app <app>` prints a review and a confirmation token; run it again with `--confirm <token>` to move the file. `node src/cli.js restore --list` lists the Quarantine.
+**Command line.** `node src/cli.js leftovers --app claude --read-home` sums up what an AI app left (`--session <id>`, `--details`, `--ascii`, `--json`). `node src/cli.js quarantine <file> --app <app>` prints a review and a confirmation token; run it again with `--confirm <token>` to move the file. `node src/cli.js restore --list` lists the Quarantine.
 
 **macOS** (14 or later, Xcode with Swift 5.10+)
 

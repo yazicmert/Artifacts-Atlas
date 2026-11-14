@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDeterministicDemoEnvironment } from '../src/fixtures/demo-environment.js';
+import { bar, BAR_WIDTH } from '../src/agent/leftovers.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Codex and Cursor read .agents/skills, Claude Code reads .claude/skills; the copies must match
@@ -124,5 +125,35 @@ test('SK4: the skill runs the summary from its own folder and writes nothing to 
       assert.doesNotMatch(r.err, /ExperimentalWarning/);
     }
     assert.deepEqual(listFiles(demo.homeDir), before);
+  });
+});
+
+test('SK5: every share has a bar of the same width, drawn in eighths, with ASCII on request', () => {
+  assert.equal(bar(1, 1), '█'.repeat(BAR_WIDTH));
+  assert.equal(bar(1, 2), '█'.repeat(BAR_WIDTH / 2) + ' '.repeat(BAR_WIDTH / 2));
+  assert.equal(bar(0, 5), ' '.repeat(BAR_WIDTH));
+  assert.equal(bar(5, 0), ' '.repeat(BAR_WIDTH));
+  // A tiny share is a sliver, never nothing
+  assert.equal(bar(1, 1e9).trim(), '▏');
+  assert.equal(bar(1, 1e9, { ascii: true }).trim(), '#');
+  for (const v of [0, 1, 3, 7, 50, 99, 100]) {
+    assert.equal([...bar(v, 100)].length, BAR_WIDTH);
+    assert.equal(bar(v, 100, { ascii: true }).length, BAR_WIDTH);
+  }
+
+  withDemo((demo) => {
+    const base = ['--no-warnings', 'src/cli.js', 'leftovers', '--app', 'claude', '--home', demo.homeDir, '--platform', 'darwin'];
+    const out = run(base).out;
+    assert.match(out, /Safe to remove +[█▏▎▍▌▋▊▉]+ +\s*\d+%/);
+    // Labels share one column width and bars one length, so every share ends in one column
+    const ends = out
+      .split('\n')
+      .filter((l) => /\d%  /.test(l))
+      .map((l) => [...l.slice(0, l.indexOf('%'))].length);
+    assert.ok(ends.length > 4);
+    assert.equal(new Set(ends).size, 1, 'the share sections line up');
+    const ascii = run([...base, '--ascii']).out;
+    assert.doesNotMatch(ascii, /[█▏▎▍▌▋▊▉]/);
+    assert.match(ascii, /#/);
   });
 });

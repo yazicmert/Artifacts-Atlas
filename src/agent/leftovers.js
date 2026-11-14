@@ -174,8 +174,45 @@ export function formatBytes(bytes) {
 const kindName = (k) => k.charAt(0) + k.slice(1).toLowerCase().replace(/_/g, ' ');
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** Plain text for a chat: short, a few dozen lines at most. */
-export function formatLeftovers(s) {
+export const BAR_WIDTH = 20;
+const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
+/**
+ * A bar of `width` cells for value/max, drawn in eighths of a cell. Anything above zero shows
+ * at least a sliver, so a small share is never drawn as nothing. With `ascii`, whole cells of #.
+ */
+export function bar(value, max, { width = BAR_WIDTH, ascii = false } = {}) {
+  if (!(max > 0) || !(value > 0)) return ' '.repeat(width);
+  const eighths = Math.max(1, Math.round((Math.min(value, max) / max) * width * 8));
+  if (ascii) {
+    const cells = Math.max(1, Math.round(eighths / 8));
+    return '#'.repeat(cells).padEnd(width);
+  }
+  const text = '█'.repeat(Math.floor(eighths / 8)) + EIGHTHS[eighths % 8];
+  return text + ' '.repeat(width - [...text].length);
+}
+
+function percent(value, total) {
+  if (!(total > 0) || !(value > 0)) return '  0%';
+  const p = (value / total) * 100;
+  return p < 1 ? ' <1%' : `${String(Math.round(p)).padStart(3)}%`;
+}
+
+/** Rows of one section: label, a bar of its share of the section, the share, size and count. */
+function barRows(items, { label, ascii, byShareOf = null, labelWidth = 0 }) {
+  // Sized by bytes; a section whose files are all empty is drawn by count
+  const useBytes = items.some((i) => i.bytes > 0);
+  const val = (i) => (useBytes ? i.bytes : i.count);
+  const total = byShareOf ?? items.reduce((sum, i) => sum + val(i), 0);
+  const width = Math.max(...items.map((i) => label(i).length), labelWidth);
+  return items.map(
+    (i) =>
+      `  ${label(i).padEnd(width)}  ${bar(val(i), total, { ascii })} ${percent(val(i), total)}  ${formatBytes(i.bytes).padStart(8)} · ${plural(i.count, 'file')}`
+  );
+}
+
+/** Plain text for a chat: short, a few dozen lines at most, with a bar for every share. */
+export function formatLeftovers(s, { ascii = false } = {}) {
   const out = [];
   const where = s.scope === 'session' ? ' · one session' : s.scope === 'project' ? ' · sessions in this project' : '';
   out.push(`Artifact Atlas · ${s.app}${where}`);
@@ -188,29 +225,43 @@ export function formatLeftovers(s) {
     const m = s.scan.measuredBeyondLimit;
     out.push(`The scan stopped listing at ${s.scan.fileLimit} files${m ? `; ${plural(m.count, 'more file')}, ${formatBytes(m.bytes)}, were measured but not listed` : ''}.`);
   }
+  // One label column for the share sections, so their bars start in the same place
+  const labelWidth = Math.max(
+    ...s.byRisk.map((r) => r.label.length),
+    ...s.byKind.map((k) => kindName(k.kind).length),
+    ...s.byOrigin.map((o) => kindName(o.confidence).length)
+  );
+  const shares = { ascii, labelWidth };
   out.push('');
   out.push('Cleanup risk');
-  for (const r of s.byRisk) out.push(`  ${r.label.padEnd(16)} ${String(r.count).padStart(7)}  ${formatBytes(r.bytes)}`);
-  out.push(`  Unused ${s.unused.days}+ days (safe files) ${plural(s.unused.count, 'file')}, ${formatBytes(s.unused.bytes)}`);
+  out.push(...barRows(s.byRisk, { label: (r) => r.label, ...shares }));
+  out.push('');
+  out.push(`Unused for ${s.unused.days}+ days (safe files), of everything found`);
+  out.push(...barRows([s.unused], { label: () => 'Unused', ...shares, byShareOf: s.total.bytes > 0 ? s.total.bytes : s.total.count }));
   out.push('');
   out.push('Kinds');
-  for (const k of s.byKind) out.push(`  ${kindName(k.kind).padEnd(16)} ${String(k.count).padStart(7)}  ${formatBytes(k.bytes)}`);
+  out.push(...barRows(s.byKind, { label: (k) => kindName(k.kind), ...shares }));
   out.push('');
   out.push('Origin');
-  for (const o of s.byOrigin) out.push(`  ${kindName(o.confidence).padEnd(16)} ${String(o.count).padStart(7)}  ${formatBytes(o.bytes)}`);
+  out.push(...barRows(s.byOrigin, { label: (o) => kindName(o.confidence), ...shares }));
   if (s.sessions.length) {
     out.push('');
-    out.push(s.scope === 'app' ? 'Sessions that left the most behind' : 'Sessions');
+    out.push(s.scope === 'app' ? 'Sessions that left the most behind (bars against the largest)' : 'Sessions');
+    const most = Math.max(...s.sessions.map((r) => r.leftBehindBytes));
+    const width = Math.max(...s.sessions.map((r) => r.label.length), 8);
     for (const r of s.sessions) {
       const flags = r.possiblyRunning ? ' · may still be running' : '';
-      out.push(`  ${r.label} · ${plural(r.leftBehindCount, 'file')}, ${formatBytes(r.leftBehindBytes)} left behind${flags}`);
+      out.push(
+        `  ${r.label.padEnd(width)}  ${bar(r.leftBehindBytes, most, { ascii })}  ${formatBytes(r.leftBehindBytes).padStart(8)} · ${plural(r.leftBehindCount, 'file')}${flags}`
+      );
     }
     if (s.sessionsNotShown) out.push(`  … ${s.sessionsNotShown} more`);
   }
   if (s.folders) {
     out.push('');
-    out.push('Largest folders');
-    for (const f of s.folders) out.push(`  ${f.folder} · ${plural(f.count, 'file')}, ${formatBytes(f.bytes)}`);
+    out.push('Largest folders (bars against the largest)');
+    const most = Math.max(...s.folders.map((f) => f.bytes));
+    for (const f of s.folders) out.push(`  ${bar(f.bytes, most, { ascii, width: 12 })}  ${formatBytes(f.bytes).padStart(8)}  ${f.folder}`);
   }
   out.push('');
   out.push('Counts are lower bounds: files made by commands a session ran are not in its record.');
