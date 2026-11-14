@@ -31,6 +31,7 @@
     <nav class="topnav" aria-label="Site">
       <a class="optional" href="#how-links-are-known">How it works</a>
       <a class="optional" href="#insights">Insights</a>
+      <a class="optional" href="#in-your-chat">In your AI</a>
       <a class="optional" href="#supported">Supported apps</a>
       <a class="optional" href="#install">Download</a>
       <a href="permissions/">Permissions</a>
@@ -192,6 +193,26 @@
         <div><h3>A report you can keep</h3>
           <p>A page and a spreadsheet of the scan, without your prompts.</p></div>
       </div>
+    </div>
+  </section>
+
+  <section class="spec" id="in-your-chat">
+    <h2>From inside your AI app <small>Claude Code, Codex, Cursor</small></h2>
+    <div class="spec-body">
+      <p>Clone the repository and open it in your coding AI. The <strong>artifact-atlas</strong> skill loads on its own: ask what it left on your disk, and it answers in the chat.</p>
+<pre><span class="c"># once</span>
+git clone https://github.com/yazicmert/basket.git &amp;&amp; cd basket
+<span class="c"># then, in Claude Code, Codex or Cursor</span>
+What have you left on my disk?</pre>
+      <div class="principles">
+        <div><h3>It asks first</h3>
+          <p>Nothing is read until you say yes in the chat.</p></div>
+        <div><h3>Numbers, not prompts</h3>
+          <p>Totals, cleanup risk, kinds and the sessions that left the most. Paths only when you ask; conversation text never.</p></div>
+        <div><h3>It only looks</h3>
+          <p>Nothing is written, moved or deleted. Cleanup stays in the app, through the Quarantine.</p></div>
+      </div>
+      <p class="note">Needs Node.js 22.13 or newer. Its answer becomes part of your chat, and so goes to the AI provider you are talking to.</p>
     </div>
   </section>
 
