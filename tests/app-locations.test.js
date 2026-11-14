@@ -151,3 +151,35 @@ test('LC4. Caches AI tools share: measured as a whole on request, links not foll
     // Nothing is listed file by file
     assert.ok(!('artifacts' in n) && !('paths' in n));
   }));
+
+test('LC5. Sign-in files, settings and what people keep in an AI app\'s folder are never yellow or safe', () =>
+  sandbox(async (dir, make) => {
+    const demo = createDeterministicDemoEnvironment(path.join(dir, 'demo'));
+    const h = demo.homeDir;
+    const files = {
+      [path.join(h, '.claude', '.credentials.json')]: 'PROTECTED',
+      [path.join(h, '.claude.json')]: 'PROTECTED',
+      [path.join(h, '.claude', 'skills', 'my-skill', 'SKILL.md')]: 'PROTECTED',
+      [path.join(h, '.claude', 'agents', 'reviewer.md')]: 'PROTECTED',
+      [path.join(h, '.claude', 'backups', '.claude.json.backup.1')]: 'PROTECTED',
+      [path.join(h, '.claude', 'plugins', 'marketplaces', 'x', 'index.js')]: 'HIGH',
+      [path.join(h, '.claude', 'launcher-settings.json')]: 'HIGH'
+    };
+    for (const f of Object.keys(files)) write(f, '{}');
+    const service = make({ homeDir: h });
+    const state = await service.scanAndAnalyze({ bundlePath: 'atlas-known:claude' });
+    for (const [f, risk] of Object.entries(files)) {
+      const a = state.artifacts.find((x) => x.canonicalPath === f);
+      assert.ok(a, f);
+      assert.equal(a.cleanupClassification, risk, f);
+    }
+    // A bulk move never takes them
+    const review = service.prepareCleanupReview(state.artifacts.filter((a) => files[a.canonicalPath]).map((a) => a.id));
+    assert.equal(review.totalEligibleCount, 0);
+
+    const codexAuth = path.join(h, '.codex', 'auth.json');
+    write(codexAuth, '{}');
+    const codex = make({ homeDir: h });
+    const cs = await codex.scanAndAnalyze({ bundlePath: 'atlas-known:codex' });
+    assert.equal(cs.artifacts.find((a) => a.canonicalPath === codexAuth).cleanupClassification, 'PROTECTED');
+  }));
