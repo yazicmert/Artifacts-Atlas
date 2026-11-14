@@ -6,6 +6,8 @@ import { createAtlasServer } from './ui/server.js';
 import { ArtifactAtlasService } from './atlas-service.js';
 import { createDeterministicDemoEnvironment } from './fixtures/demo-environment.js';
 import { RestoreConflictStrategy } from './models/entities.js';
+import { KNOWN_APP_PREFIX } from './discovery/application-discovery.js';
+import { LEFTOVER_APPS, summarizeLeftovers, formatLeftovers } from './agent/leftovers.js';
 
 const args = process.argv.slice(2);
 const command = args[0] || 'serve';
@@ -32,7 +34,10 @@ const VALUE_FLAGS = new Set([
   '--app',
   '--workspace',
   '--confirm',
-  '--strategy'
+  '--strategy',
+  '--session',
+  '--project',
+  '--unused-days'
 ]);
 
 /**
@@ -364,6 +369,59 @@ function runCliRestore() {
   }
 }
 
+/**
+ * artifact-atlas leftovers --app claude|codex|cursor --read-home
+ *                          [--session <id>] [--project <dir>] [--details] [--json] [--unused-days 30|90|180]
+ *
+ * What an AI app left on disk, for a chat with that app (the repo's skill runs it). Read only:
+ * the scan runs in memory and writes nothing. Reading the real home folder needs --read-home,
+ * which the agent passes only after the user said yes (AGENTS.md rule 7). Project and
+ * dependency folders are not walked. Numbers only unless --details; never prompt text.
+ */
+async function runCliLeftovers() {
+  const detected = process.env.CLAUDECODE ? 'claude' : process.env.CODEX_HOME || process.env.CODEX_SANDBOX ? 'codex' : null;
+  const appId = String(parseFlagValue('--app', detected || '')).toLowerCase();
+  if (!LEFTOVER_APPS.includes(appId)) {
+    console.error(`Usage: artifact-atlas leftovers --app ${LEFTOVER_APPS.join('|')} --read-home [--session <id>] [--project <dir>] [--details] [--json]`);
+    return 1;
+  }
+  const homeFlag = parseFlagValue('--home', null);
+  if (!homeFlag && !hasFlag('--read-home')) {
+    console.error(
+      'Artifact Atlas reads this app\'s folders in your home folder (names, sizes and dates; no file contents, no conversations).\n' +
+        'Ask the user first, then run the same command with --read-home.'
+    );
+    return 2;
+  }
+  // A substitution the host did not fill in (for example "${CLAUDE_SESSION_ID}") is no session
+  const rawSession = parseFlagValue('--session', null);
+  const sessionId = rawSession && !rawSession.includes('$') ? rawSession : null;
+  const unusedDays = [30, 90, 180].includes(Number(parseFlagValue('--unused-days', 30))) ? Number(parseFlagValue('--unused-days', 30)) : 30;
+
+  // In memory: nothing is written to the app's index, its scan history or its Quarantine
+  const service = new ArtifactAtlasService({
+    homeDir: homeFlag || undefined,
+    platform: parseFlagValue('--platform', null) || undefined
+  });
+  try {
+    await service.scanAndAnalyze({ bundlePath: `${KNOWN_APP_PREFIX}${appId}` });
+    const summary = summarizeLeftovers(service.activeState, {
+      sessionId,
+      projectDir: sessionId ? null : parseFlagValue('--project', null),
+      details: hasFlag('--details'),
+      unusedDays,
+      homeDir: service.platformServices.homeDir
+    });
+    console.log(hasFlag('--json') ? JSON.stringify(summary, null, 2) : formatLeftovers(summary));
+    return 0;
+  } catch (err) {
+    console.error(`Could not read the leftovers: ${err.message}`);
+    return 1;
+  } finally {
+    service.sqliteStore.close();
+  }
+}
+
 if (command === 'serve') {
   runServe();
 } else if (command === 'demo') {
@@ -374,9 +432,13 @@ if (command === 'serve') {
   runCliQuarantine().then((code) => {
     process.exitCode = code;
   });
+} else if (command === 'leftovers') {
+  runCliLeftovers().then((code) => {
+    process.exitCode = code;
+  });
 } else if (command === 'restore') {
   process.exitCode = runCliRestore();
 } else {
-  console.error(`Unknown command '${command}'. Supported: serve, demo, scan, quarantine, restore`);
+  console.error(`Unknown command '${command}'. Supported: serve, demo, scan, leftovers, quarantine, restore`);
   process.exit(1);
 }

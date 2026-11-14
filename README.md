@@ -54,6 +54,16 @@ AI coding tools leave far more on disk than the code you asked for: installs, ca
 
 Artifact Atlas runs on your computer and reads nothing until you allow it. It never starts the apps it scans, never stores your conversations, and never ties a file to a session on a guess. There is no account and no telemetry; the only network use is the update check, which you can turn off. Read the [privacy policy](https://yazicmert.github.io/basket/legal/privacy/) and what each [permission](https://yazicmert.github.io/basket/permissions/) allows.
 
+## From inside your AI app
+
+Clone this repository and open it in Claude Code, Codex or Cursor: the **artifact-atlas** skill loads on its own. Ask *"What have you left on my disk?"* and the agent asks once before reading, then shows what that app left behind: totals, what is safe to remove, the largest kinds and the sessions that left the most.
+
+```bash
+git clone https://github.com/yazicmert/basket.git && cd basket && claude
+```
+
+The skill only looks; cleanup stays in the app, through the Quarantine. It reads names, sizes and dates, never file contents or conversations, and it writes nothing. Its answer becomes part of your chat, so it holds numbers unless you ask for paths. Needs Node.js 22.13 or newer.
+
 ## Install
 
 **macOS** 14 or later, Apple silicon. Open the [disk image](https://github.com/yazicmert/basket/releases/latest/download/ArtifactAtlas-macOS.dmg), drag the app into Applications, and on first launch choose **Open Anyway** in System Settings → Privacy & Security.
@@ -76,7 +86,7 @@ npm test     # runs on Linux, macOS and Windows
 <summary>Command line and building the apps</summary>
 <br />
 
-**Command line.** `node src/cli.js quarantine <file> --app <app>` prints a review and a confirmation token; run it again with `--confirm <token>` to move the file. `node src/cli.js restore --list` lists the Quarantine.
+**Command line.** `node src/cli.js leftovers --app claude --read-home` sums up what an AI app left (`--session <id>`, `--details`, `--json`). `node src/cli.js quarantine <file> --app <app>` prints a review and a confirmation token; run it again with `--confirm <token>` to move the file. `node src/cli.js restore --list` lists the Quarantine.
 
 **macOS** (14 or later, Xcode with Swift 5.10+)
 
