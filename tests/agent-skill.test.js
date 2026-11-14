@@ -61,6 +61,9 @@ test('SK2: the real home folder is read only with --read-home, and an unknown ap
   assert.equal(refused.code, 2);
   assert.match(refused.err, /Ask the user first/);
   assert.equal(refused.out, '');
+  // Naming the real home folder with --home still needs the yes
+  const named = run(['--no-warnings', 'src/cli.js', 'leftovers', '--app', 'claude', '--home', os.homedir()]);
+  assert.equal(named.code, 2);
   const unknown = run(['--no-warnings', 'src/cli.js', 'leftovers', '--app', 'notepad', '--read-home']);
   assert.equal(unknown.code, 1);
 });
@@ -102,6 +105,9 @@ test('SK3: the summary has numbers by default, paths only with --details, and ne
     // A substitution the host left unfilled means the whole app
     const unfilled = JSON.parse(run([...base, '--json', '--session', '${CLAUDE_SESSION_ID}']).out);
     assert.equal(unfilled.scope, 'app');
+
+    const emptied = JSON.parse(run([...base, '--session', '--json']).out);
+    assert.equal(emptied.scope, 'app');
 
     const missing = run([...base, '--session', 'ffffffffffff']);
     assert.match(missing.out, /No session with that ID/);

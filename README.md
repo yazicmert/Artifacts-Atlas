@@ -62,7 +62,7 @@ Clone this repository and open it in Claude Code, Codex or Cursor: the **artifac
 git clone https://github.com/yazicmert/basket.git && cd basket && claude
 ```
 
-The skill only looks; cleanup stays in the app, through the Quarantine. It reads names, sizes and dates, never file contents or conversations, and it writes nothing. Its answer becomes part of your chat, so it holds numbers unless you ask for paths. Needs Node.js 22.13 or newer.
+The skill only looks; cleanup stays in the app, through the Quarantine. It reads file names, sizes and dates and the structure of the app's session records, never prints or stores conversation text, and writes nothing. Its answer becomes part of your chat, so it holds numbers unless you ask for paths. Needs Node.js 22.13 or newer.
 
 ## Install
 

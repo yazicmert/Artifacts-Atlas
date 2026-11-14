@@ -386,16 +386,27 @@ async function runCliLeftovers() {
     return 1;
   }
   const homeFlag = parseFlagValue('--home', null);
-  if (!homeFlag && !hasFlag('--read-home')) {
+  const realPath = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  // The user's own home folder, however it is named, is read only after they said yes
+  const readsRealHome = !homeFlag || realPath(homeFlag) === realPath(os.homedir());
+  if (readsRealHome && !hasFlag('--read-home')) {
     console.error(
-      'Artifact Atlas reads this app\'s folders in your home folder (names, sizes and dates; no file contents, no conversations).\n' +
+      'Artifact Atlas reads this app\'s folders in your home folder: file names, sizes and dates, and the app\'s session records ' +
+        'for their structure only (session IDs, times, tool names, file paths). It never prints or stores conversation text.\n' +
         'Ask the user first, then run the same command with --read-home.'
     );
     return 2;
   }
-  // A substitution the host did not fill in (for example "${CLAUDE_SESSION_ID}") is no session
+  // A substitution the host did not fill in ("${CLAUDE_SESSION_ID}", an empty value, or the
+  // next flag taken as the value) is no session
   const rawSession = parseFlagValue('--session', null);
-  const sessionId = rawSession && !rawSession.includes('$') ? rawSession : null;
+  const sessionId = rawSession && !rawSession.includes('$') && !rawSession.startsWith('--') ? rawSession.trim() || null : null;
   const unusedDays = [30, 90, 180].includes(Number(parseFlagValue('--unused-days', 30))) ? Number(parseFlagValue('--unused-days', 30)) : 30;
 
   // In memory: nothing is written to the app's index, its scan history or its Quarantine

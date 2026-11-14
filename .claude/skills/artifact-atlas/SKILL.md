@@ -9,7 +9,7 @@ Artifact Atlas measures what an AI app leaves on disk and ties files to the sess
 
 ## Steps
 
-1. **Ask first.** The command reads this app's folders in the user's home folder: names, sizes and dates, never file contents or conversations. Ask the user once in this conversation whether that is fine. Do not run it before they say yes.
+1. **Ask first.** The command reads this app's folders in the user's home folder: file names, sizes and dates, and the app's session records for their structure only (session IDs, times, tool names, file paths). It never prints or stores conversation text, and it writes nothing. Ask the user once in this conversation whether that is fine. Do not run it before they say yes.
 
 2. **Run the summary** with Node.js 22.13 or newer. The script is `scripts/leftovers.mjs` in this skill's folder (`${CLAUDE_SKILL_DIR}` in Claude Code; elsewhere, the folder this file is in).
 
@@ -17,9 +17,15 @@ Artifact Atlas measures what an AI app leaves on disk and ties files to the sess
    node "${CLAUDE_SKILL_DIR}/scripts/leftovers.mjs" --app claude --read-home
    ```
 
+   If that path comes out empty (the app did not fill in `${CLAUDE_SKILL_DIR}`), run it from the clone's root instead:
+
+   ```bash
+   node .claude/skills/artifact-atlas/scripts/leftovers.mjs --app claude --read-home
+   ```
+
    - `--app`: the app you are running in: `claude` (Claude Code), `codex` (Codex) or `cursor` (Cursor).
-   - This session only: add `--session ${CLAUDE_SESSION_ID}` in Claude Code. In another app, add `--project "<this project's folder>"` to see the sessions that ran in this project.
-   - Paths and session titles: add `--details` only when the user asks for them. They are left out by default because this output is sent to the AI provider with the rest of the chat.
+   - This session only: add `--session "${CLAUDE_SESSION_ID}"` in Claude Code (an empty value means the whole app). In another app, add `--project "<this project's folder>"` to see the sessions that ran in this project.
+   - Paths, and session titles where the app's record names one: add `--details` only when the user asks for them. They are left out by default because this output is sent to the AI provider with the rest of the chat.
    - `--json` gives the same summary as JSON. `--unused-days 90` or `180` changes what counts as unused.
 
 3. **Report** in the user's language, briefly: the total, what is safe to remove, the largest kinds and the sessions that left the most. Say the counts are lower bounds. A session marked "may still be running" is likely this one.
