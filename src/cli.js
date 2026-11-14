@@ -423,7 +423,7 @@ async function runCliLeftovers() {
       unusedDays,
       homeDir: service.platformServices.homeDir
     });
-    console.log(hasFlag('--json') ? JSON.stringify(summary, null, 2) : formatLeftovers(summary));
+    console.log(hasFlag('--json') ? JSON.stringify(summary, null, 2) : formatLeftovers(summary, { ascii: hasFlag('--ascii') }));
     return 0;
   } catch (err) {
     console.error(`Could not read the leftovers: ${err.message}`);

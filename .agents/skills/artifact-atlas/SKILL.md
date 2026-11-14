@@ -26,9 +26,10 @@ Artifact Atlas measures what an AI app leaves on disk and ties files to the sess
    - `--app`: the app you are running in: `claude` (Claude Code), `codex` (Codex) or `cursor` (Cursor).
    - This session only: add `--session "${CLAUDE_SESSION_ID}"` in Claude Code (an empty value means the whole app). In another app, add `--project "<this project's folder>"` to see the sessions that ran in this project.
    - Paths, and session titles where the app's record names one: add `--details` only when the user asks for them. They are left out by default because this output is sent to the AI provider with the rest of the chat.
+   - `--ascii` draws the bars with `#` if the chat shows boxes instead of blocks.
    - `--json` gives the same summary as JSON. `--unused-days 90` or `180` changes what counts as unused.
 
-3. **Report** in the user's language, briefly: the total, what is safe to remove, the largest kinds and the sessions that left the most. Say the counts are lower bounds. A session marked "may still be running" is likely this one.
+3. **Report** in the user's language. Show the summary's sections with their bars as they are, inside a code block so the columns stay aligned; translate the headings if you like, but do not redraw or round the bars. Then say in a few lines what stands out: the total, what is safe to remove, the largest kinds and the sessions that left the most. Say the counts are lower bounds. A session marked "may still be running" is likely this one.
 
 ## Rules
 
