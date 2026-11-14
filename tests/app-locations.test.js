@@ -126,3 +126,28 @@ test('LC3. Archived Codex sessions are sessions; Codex and Cursor record stores 
       assert.equal(a.cleanupClassification, 'HIGH', p);
     }
   }));
+
+test('LC4. Caches AI tools share: measured as a whole on request, links not followed, a hardlink once', () =>
+  sandbox(async (dir) => {
+    const { measureSharedCaches } = await import('../src/graph/shared-caches.js');
+    const home = path.join(dir, 'home');
+    const npx = path.join(home, '.npm', '_npx', 'abc123', 'node_modules', 'server', 'index.js');
+    write(npx, 'x'.repeat(4096));
+    write(path.join(home, '.cache', 'huggingface', 'hub', 'model.bin'), 'y'.repeat(8192));
+    const outside = path.join(dir, 'outside', 'big.bin');
+    write(outside, 'z'.repeat(65536));
+    if (process.platform !== 'win32') {
+      fs.symlinkSync(path.dirname(outside), path.join(home, '.npm', '_npx', 'link'));
+      fs.linkSync(npx, path.join(home, '.npm', '_npx', 'abc123', 'copy.js'));
+    }
+    const ps = new PlatformServices({ homeDir: home, platform: 'darwin' });
+    const { caches } = await measureSharedCaches(ps);
+    const byName = Object.fromEntries(caches.map((c) => [c.name, c]));
+    assert.deepEqual(Object.keys(byName).sort(), ['Hugging Face models', 'npx packages']);
+    const n = byName['npx packages'];
+    assert.equal(n.files, process.platform === 'win32' ? 1 : 2, 'the link to a folder outside is not followed');
+    assert.ok(n.bytes >= 4096 && n.bytes < 65536, 'a hardlinked file counts once, the outside folder not at all');
+    assert.ok(n.clearWith);
+    // Nothing is listed file by file
+    assert.ok(!('artifacts' in n) && !('paths' in n));
+  }));

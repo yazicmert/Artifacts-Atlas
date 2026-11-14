@@ -2703,12 +2703,13 @@ function pastLimitCardHtml(scan) {
 async function renderInsightsView() {
   const body = document.getElementById('insights-body');
   if (!body || !uiState.activeState?.scan) return;
-  const [leftovers, copies, unused, suggestions] = await Promise.all([
+  const [leftovers, copies, unused, suggestions, shared] = await Promise.all([
     apiRequest('/api/project-leftovers', 'GET').then((r) => r.leftovers).catch(() => null),
     apiRequest('/api/insights/copies', 'GET').then((r) => r.copies).catch(() => null),
     // A preview: it never replaces a confirmation that is open
     apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30, preview: true }).then((r) => r.cleanup).catch(() => null),
-    apiRequest('/api/cleanup/suggestions', 'POST', { minDays: uiState.suggestionDays || 7 }).then((r) => r.suggestions).catch(() => null)
+    apiRequest('/api/cleanup/suggestions', 'POST', { minDays: uiState.suggestionDays || 7 }).then((r) => r.suggestions).catch(() => null),
+    apiRequest('/api/insights/shared-caches', 'GET').then((r) => r.shared).catch(() => null)
   ]);
   uiState.suggestions = suggestions;
   const cards = [
@@ -2717,6 +2718,7 @@ async function renderInsightsView() {
     growthCardHtml(uiState.activeState.growth),
     pastLimitCardHtml(uiState.activeState.scan),
     copiesCardHtml(copies),
+    sharedCachesCardHtml(shared),
     worktreesCardHtml(leftovers),
     buildOutputsCardHtml(leftovers)
   ].filter(Boolean);
@@ -2775,6 +2777,35 @@ function suggestionsCardHtml(plan) {
      <p class="insight-quiet">Only files the app keeps for itself and can make again, such as caches, temporary files and logs: never your projects, settings, skills, plug-ins, backups, session records, protected or high-risk files, or files of a session that may be running. They move to the Quarantine and are deleted after ${plan.deleteAfterDays} days; one the app makes again is kept.</p>`,
     { wide: true }
   );
+}
+
+/* Caches AI tools share with other programs: measured on request, never anyone's leftovers,
+   never cleaned up from here. Each row says which tool clears it. */
+function sharedCachesCardHtml(shared) {
+  const intro = '<p class="insight-quiet">Packages npx and uvx fetch to start MCP servers, browsers that browser tools download, models from Hugging Face. Other programs use them too, so they are not counted as any app\'s leftovers and are never cleaned up from here.</p>';
+  if (!shared) {
+    return insightCard('Caches AI tools share', `${intro}<button id="shared-measure-btn" class="secondary-btn" type="button">Measure</button>`);
+  }
+  if (!shared.caches.length) {
+    return insightCard('Caches AI tools share', `${intro}<p class="insight-quiet">None of these caches is on this computer.</p>`);
+  }
+  const largest = Math.max(...shared.caches.map((c) => c.bytes), 1);
+  const rows = shared.caches
+    .map(
+      (c) => `
+      <div class="suggestion-row shared-row">
+        <span class="suggestion-main">
+          <span class="suggestion-folder"><strong>${escapeHtml(c.name)}</strong> <span class="mono">${escapeHtml(shortPath(c.path))}</span></span>
+          <span class="suggestion-meta">${c.truncated ? 'at least ' : ''}${pluralize(c.files, 'file')} · ${escapeHtml(c.usedBy)}${c.newestChange ? ` · last changed ${escapeHtml(formatDate(c.newestChange))}` : ''}</span>
+          ${c.clearWith ? `<span class="suggestion-meta">Cleared with <code>${escapeHtml(c.clearWith)}</code></span>` : ''}
+          <span class="suggestion-bar"><span style="width:${Math.max(2, Math.round((c.bytes / largest) * 100))}%"></span></span>
+          <button class="link-btn" type="button" data-reveal="shared-cache:${escapeHtml(c.id)}" data-label="${escapeHtml(c.name)}">Show in ${escapeHtml(fileManagerName())}</button>
+        </span>
+        <span class="insight-num">${c.truncated ? '≥ ' : ''}${formatBytes(c.bytes)}</span>
+      </div>`
+    )
+    .join('');
+  return insightCard('Caches AI tools share', `${intro}<div class="suggestion-list">${rows}</div><button id="shared-measure-btn" class="link-btn insight-link" type="button">Measure Again</button>`, { wide: true });
 }
 
 function updateSuggestionPick() {
@@ -2923,6 +2954,16 @@ function bindUnusedEvents() {
 function bindInsightsActions(box) {
   box.querySelector('#unused-clean-btn')?.addEventListener('click', openUnusedCleanup);
   box.querySelector('#suggestion-clean-btn')?.addEventListener('click', openSuggestedCleanup);
+  box.querySelector('#shared-measure-btn')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Measuring…';
+    try {
+      await apiRequest('/api/insights/shared-caches', 'POST', {});
+    } catch (err) {
+      showToast(`Could not measure: ${err.message}`);
+    }
+    renderInsightsView();
+  });
   box.querySelector('#suggestion-days')?.addEventListener('change', (e) => {
     uiState.suggestionDays = Number(e.target.value);
     renderInsightsView();

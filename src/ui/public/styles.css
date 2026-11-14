@@ -2042,3 +2042,10 @@ button.crumb:hover {
   color: var(--ink-3);
   font-family: var(--font-sans, inherit);
 }
+.shared-row {
+  cursor: default;
+}
+.shared-row .link-btn {
+  align-self: flex-start;
+  font-size: 11.5px;
+}

@@ -44,11 +44,11 @@ AI coding tools leave far more on disk than the code you asked for: installs, ca
 
 |  |  |
 |---|---|
-| **Every file, traced to its prompt** | Claude Code files are linked to the session and the tool call that wrote them. Cursor and Codex sessions show the prompt that started them. Any other app is found by its own data folders. |
+| **Every file, traced to its prompt** | Claude Code files are linked to the session and the tool call that wrote them, including each session's working files in the temp folder. Cursor and Codex sessions show the prompt that started them. Any other app is found by its own data folders. |
 | **What each prompt cost** | Each session shows what it left behind beyond the work it delivered, in files and bytes. |
 | **A risk for every file** | Safe to remove, review first, high risk or protected, judged by where a file lives and how it is used. Never by its extension alone. |
 | **Cleanup you can undo** | Files go to a Quarantine first and can be put back. The app suggests the folders it has left untouched, and you clear the ones you tick in one step: they are deleted after 7 days unless their app makes them again. |
-| **Insights over time** | What changed since the last scan, worktrees, build outputs, identical files, and a report you can keep. |
+| **Insights over time** | What changed since the last scan, worktrees, build outputs, identical files, the caches AI tools share, and a report you can keep. |
 
 ## Private by design
 

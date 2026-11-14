@@ -43,6 +43,7 @@ import { readAppIconPng } from '../discovery/app-icon.js';
 import { readWindowsAppIconPng } from '../discovery/windows-icon.js';
 import { buildMapLevel, levelArtifactIds, searchFiles } from '../graph/map-levels.js';
 import { sessionLeftoverIds } from '../graph/prompt-costs.js';
+import { measureSharedCaches } from '../graph/shared-caches.js';
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from '../platform/update-check.js';
 import {
   findRunningAppBundle,
@@ -638,8 +639,15 @@ export function createAtlasServer(options = {}) {
 
   // The folder or file behind a mark of the map, a worktree or a project. Only places the scan
   // listed can be shown; the client never names a path here.
+  // Caches AI tools share, measured when the user asks; kept per service (sample or real home)
+  const sharedCachesByService = new WeakMap();
   const revealPathForId = (state, id) => {
     if (!state) return null;
+    const shared = /^shared-cache:(.+)$/.exec(id);
+    if (shared) {
+      const row = (sharedCachesByService.get(activeService())?.caches || []).find((c) => c.id === shared[1]);
+      return row ? row.path : null;
+    }
     const live = (state.artifacts || []).filter((a) => !a.quarantined);
     const art = live.find((a) => a.id === id);
     if (art) return art.canonicalPath;
@@ -1109,6 +1117,17 @@ export function createAtlasServer(options = {}) {
         fs.writeFileSync(csvPath, reportCsv(data));
         const shown = await activeService().platformServices.revealInFinder(htmlPath, { simulate: Boolean(options.simulateSystemOpen) });
         return sendJson(res, 200, { ok: true, htmlPath, csvPath, shown: shown.ok });
+      }
+
+      if (url.pathname === '/api/insights/shared-caches' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, shared: sharedCachesByService.get(activeService()) || null });
+      }
+      if (url.pathname === '/api/insights/shared-caches' && req.method === 'POST') {
+        const service = activeService();
+        const measured = await measureSharedCaches(service.platformServices);
+        const shared = { measuredAt: new Date(clock()).toISOString(), caches: measured.caches };
+        sharedCachesByService.set(service, shared);
+        return sendJson(res, 200, { ok: true, shared });
       }
 
       if (url.pathname === '/api/insights/copies' && req.method === 'GET') {
