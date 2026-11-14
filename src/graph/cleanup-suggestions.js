@@ -11,6 +11,7 @@
  */
 import crypto from 'node:crypto';
 import { computePromptCosts } from './prompt-costs.js';
+import { KEPT_FOLDERS, REMADE_FOLDERS } from '../classification/app-folders.js';
 
 export const SUGGESTION_DAY_CHOICES = [7, 30, 90];
 export const SUGGESTION_DEFAULT_DAYS = 7;
@@ -22,12 +23,7 @@ const SUGGESTED_RISKS = new Set(['LOW', 'REVIEW']);
 // plug-ins, backups and memory files in the same data folders never are.
 // Temporary files are not among them: that kind can rest on a name alone (a .bak backup)
 const REMADE_KINDS = new Set(['REGENERABLE_CACHE', 'LOG', 'BUILD_OUTPUT']);
-// Folders where the user keeps things in an app's data folder: never offered when review first
-const KEPT_FOLDERS = new Set(['backups', 'backup', 'skills', 'plugins', 'agents', 'commands', 'memory', 'settings', 'projects', 'sessions']);
-const REMADE_FOLDERS = new Set([
-  'tmp', '.tmp', 'temp', '.temp', 'cache', '.cache', 'caches', 'code cache', 'gpucache', 'shadercache',
-  'dawncache', 'grshadercache', 'log', 'logs', 'crashpad', 'crashes'
-]);
+
 const DAY_MS = 86400000;
 
 const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');

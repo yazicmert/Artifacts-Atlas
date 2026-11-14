@@ -1,3 +1,4 @@
+import { keptFolderInAppHome, keptFolderDescription, isAppHomeTopLevelFile } from './app-folders.js';
 import {
   ArtifactType,
   RiskCategory,
@@ -11,10 +12,21 @@ import { toPathKey } from '../platform/path-keys.js';
 const CREDENTIAL_PATTERNS = [
   /^\.env(\..+)?$/i,
   /\.(pem|key|p12|pfx|keystore|jks)$/i,
-  /^(id_rsa|id_ed25519|credentials\.json|secrets\.json|\.netrc|\.npmrc)$/i
+  /^(id_rsa|id_ed25519|credentials\.json|secrets\.json|\.netrc|\.npmrc)$/i,
+  // Sign-in files of AI tools: Claude Code's .credentials.json, Codex's auth.json, OAuth tokens
+  /^\.credentials(\.json)?$/i,
+  /^auth\.json$/i,
+  /^oauth[_-]?(creds|credentials|tokens?)(\.json)?$/i
 ];
 
 const CONFIG_FILENAMES = new Set([
+  // AI tools' own settings and sign-in state
+  '.claude.json',
+  'settings.local.json',
+  'claude_desktop_config.json',
+  'config.toml',
+  'mcp.json',
+  '.mcp.json',
   'package.json',
   'package-lock.json',
   'pnpm-lock.yaml',
@@ -309,6 +321,36 @@ export class ClassificationEngine {
           'Quarantining this file removes local conversation history and breaks verified provenance links for files created in this session.'
       };
     }
+
+    // 4b. What people keep in an AI app's own folder: skills, agents, commands, memory and the
+    // app's backups of their settings are theirs (PROTECTED); plug-ins can be installed again,
+    // but only by the user (HIGH); a file directly in the app's folder is its settings or state
+    const kept = keptFolderInAppHome(lowerPath);
+    if (kept) {
+      return {
+        artifactType: ArtifactType.USER_CONTENT,
+        riskCategory: RiskCategory.PROTECTED,
+        explanation: `${keptFolderDescription(kept)}. Kept by you, not made again by the app.`,
+        consequences: 'Removing it loses what you set up; the app does not make it again.'
+      };
+    }
+    if (/\/\.(claude|codex|cursor|gemini|windsurf|codeium|continue|kiro|trae)\/(plugins|extensions)\//.test(lowerPath)) {
+      return {
+        artifactType: ArtifactType.USER_CONTENT,
+        riskCategory: RiskCategory.HIGH,
+        explanation: 'A plug-in or extension you installed in the app.',
+        consequences: 'Removing it uninstalls part of a plug-in; you would have to install it again.'
+      };
+    }
+    if (isAppHomeTopLevelFile(lowerPath)) {
+      return {
+        artifactType: ArtifactType.USER_CONTENT,
+        riskCategory: RiskCategory.HIGH,
+        explanation: 'A settings or state file directly in the app\'s own folder.',
+        consequences: 'Removing it can reset the app\'s settings or sign you out.'
+      };
+    }
+
 
     // 5. Model Checkpoints -> HIGH
     const isCheckpointContext =

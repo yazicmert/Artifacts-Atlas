@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { spawnSync } from 'node:child_process';
 import {
   ArtifactType,
@@ -836,6 +837,53 @@ test('S13. Suggested cleanup: the app\'s own untouched folders, safe and review-
     const byId = new Map(service.sqliteStore.listQuarantineEntries().map((e) => [e.id, e]));
     assert.equal(byId.get(tampered.id).status, 'QUARANTINED');
     for (const e of rest) assert.equal(byId.get(e.id).status, 'PURGED');
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test('S14. Quitting mid-move: the move stops at a file, every moved file is listed, and lost records come back from manifests', async () => {
+  const sandbox = createTempSandbox();
+  try {
+    const demo = createDeterministicDemoEnvironment(sandbox.dir);
+    const cache = path.join(demo.homeDir, 'Library', 'Caches', 'com.anthropic.claudefordesktop', 'Cache_Data');
+    fs.mkdirSync(cache, { recursive: true });
+    for (let i = 0; i < 1500; i++) fs.writeFileSync(path.join(cache, `f_${i}`), 'x');
+    const opts = {
+      homeDir: demo.homeDir, platform: 'darwin',
+      dbPath: path.join(sandbox.dir, 'atlas.sqlite'),
+      quarantineRoot: path.join(sandbox.dir, 'quarantine-vault')
+    };
+    const service = new ArtifactAtlasService(opts);
+    const state = await service.scanAndAnalyze({ bundlePath: demo.appBundles.claude.bundlePath });
+    const ids = state.artifacts.filter((a) => a.cleanupClassification === RiskCategory.LOW).map((a) => a.id);
+    const review = service.prepareCleanupReview(ids);
+    const stop = new AbortController();
+    let seen = 0;
+    const result = await service.executeQuarantineAsync(
+      { artifactIds: ids, confirmationToken: review.confirmationToken },
+      { signal: stop.signal, onProgress: (p) => { seen = p.done; if (p.done >= 400) stop.abort(); } }
+    );
+    assert.ok(seen >= 400);
+    assert.equal(result.stopped, true);
+    assert.ok(result.quarantinedEntries.length >= 400 && result.quarantinedEntries.length < ids.length);
+    const listed = service.sqliteStore.listQuarantineEntries('QUARANTINED').length;
+    assert.equal(listed, result.quarantinedEntries.length, 'every moved file has its record');
+    service.sqliteStore.close();
+
+    // A killed app loses records saved in groups: they come back from the manifests
+    const db = new DatabaseSync(opts.dbPath);
+    db.exec("DELETE FROM quarantine_entries WHERE rowid IN (SELECT rowid FROM quarantine_entries LIMIT 100)");
+    db.close();
+    const reopened = new ArtifactAtlasService(opts);
+    openServices.push(reopened);
+    assert.equal(reopened.sqliteStore.listQuarantineEntries('QUARANTINED').length, listed - 100);
+    assert.equal(reopened.cleanupEngine.reconcileManifests(), 100);
+    assert.equal(reopened.sqliteStore.listQuarantineEntries('QUARANTINED').length, listed);
+    // And they can be put back
+    const back = reopened.sqliteStore.listQuarantineEntries('QUARANTINED')[0];
+    const r = reopened.restoreQuarantineEntry({ entryId: back.id, conflictStrategy: 'FAIL_IF_EXISTS' });
+    assert.ok(fs.existsSync(r.restoredToPath));
   } finally {
     sandbox.cleanup();
   }

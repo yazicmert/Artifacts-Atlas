@@ -34,6 +34,7 @@ import { readSessionFirstPrompt, promptExcerpt } from './provenance/session-prom
 import { computePromptCosts } from './graph/prompt-costs.js';
 import { summarizeScanForHistory, compareScans } from './graph/scan-history.js';
 import { sessionLabel } from './graph/report.js';
+import { buildReviewGroups } from './graph/review-groups.js';
 
 // Upper bound on files in one scan. The map and the UI stay responsive well beyond this
 // because they work from summaries; the bound keeps memory and scan time predictable.
@@ -574,53 +575,75 @@ export class ArtifactAtlasService {
    * while the others move. Any other token (such as the command line's, from another process)
    * must match a fresh review of the whole selection.
    */
-  executeQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false, now = Date.now() }) {
+  executeQuarantine(args) {
+    const plan = this.planQuarantine(args);
+    const moved = plan.engineArgs ? this.cleanupEngine.executeQuarantine(plan.engineArgs) : null;
+    return this.finishQuarantine(plan, moved);
+  }
+
+  /**
+   * The same move in batches, with a pause between them, so the app keeps answering while tens
+   * of thousands of files move (a large selection takes minutes). onProgress gets { done, total }.
+   */
+  async executeQuarantineAsync(args, { onProgress = () => {}, signal = null } = {}) {
+    const plan = this.planQuarantine(args);
+    const moved = plan.engineArgs ? await this.cleanupEngine.executeQuarantineAsync(plan.engineArgs, { onProgress, signal }) : null;
+    return this.finishQuarantine(plan, moved);
+  }
+
+  /** What a confirmed move will move, checked again now, and what stays and why. */
+  planQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false, now = Date.now() }) {
     const pending = this.pendingCleanupReview;
     const fromReview =
       pending && confirmationToken && confirmationToken === pending.token && now - pending.preparedAt <= 10 * 60 * 1000;
-
-    let result;
-    if (fromReview) {
-      this.pendingCleanupReview = null;
-      const { allowed, blocked: running } = this.splitBySessionActivity(artifactIds);
-      const confirmed = allowed.filter((a) => pending.eligibleIds.has(a.id));
-      const recheck = this.cleanupEngine.prepareCleanupReview({
-        artifacts: confirmed,
-        authorizedRoots: this.activeState.authorizedRoots,
-        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride,
-        selectionSize: pending.selectionSize
-      });
-      const stillThere = new Set(this.activeState.artifacts.filter((a) => !a.quarantined).map((a) => a.id));
-      const dropped = [
-        ...recheck.blockedItems,
-        ...running.filter((b) => pending.eligibleIds.has(b.artifactId))
-      ];
-      const missing = [...pending.eligibleIds].filter((id) => !stillThere.has(id)).length;
-      if (!recheck.confirmationToken) {
-        result = { batchId: null, quarantinedEntries: [], blockedItems: dropped };
-      } else {
-        const eligible = new Set(recheck.eligibleItems.map((i) => i.artifactId));
-        const moved = this.cleanupEngine.executeQuarantine({
-          selectionSize: pending.selectionSize,
-          artifacts: confirmed.filter((a) => eligible.has(a.id)),
-          authorizedRoots: this.activeState.authorizedRoots,
-          confirmationToken: recheck.confirmationToken,
-          allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride
-        });
-        result = { ...moved, blockedItems: [...dropped, ...(moved.blockedItems || [])] };
-      }
-      result.leftSinceReview = result.blockedItems.length + missing;
-    } else {
+    if (!fromReview) {
       const { allowed: selected, selectionSize } = this.splitBySessionActivity(artifactIds);
-      result = this.cleanupEngine.executeQuarantine({
-        selectionSize,
-        artifacts: selected,
-        authorizedRoots: this.activeState.authorizedRoots,
-        confirmationToken,
-        allowHighRiskSingleOverride
-      });
+      return {
+        fromReview: false,
+        engineArgs: {
+          selectionSize,
+          artifacts: selected,
+          authorizedRoots: this.activeState.authorizedRoots,
+          confirmationToken,
+          allowHighRiskSingleOverride
+        },
+        dropped: [],
+        missing: 0
+      };
     }
+    this.pendingCleanupReview = null;
+    const { allowed, blocked: running } = this.splitBySessionActivity(artifactIds);
+    const confirmed = allowed.filter((a) => pending.eligibleIds.has(a.id));
+    const recheck = this.cleanupEngine.prepareCleanupReview({
+      artifacts: confirmed,
+      authorizedRoots: this.activeState.authorizedRoots,
+      allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride,
+      selectionSize: pending.selectionSize
+    });
+    const stillThere = new Set(this.activeState.artifacts.filter((a) => !a.quarantined).map((a) => a.id));
+    const dropped = [...recheck.blockedItems, ...running.filter((b) => pending.eligibleIds.has(b.artifactId))];
+    const missing = [...pending.eligibleIds].filter((id) => !stillThere.has(id)).length;
+    if (!recheck.confirmationToken) return { fromReview: true, engineArgs: null, dropped, missing };
+    const eligible = new Set(recheck.eligibleItems.map((i) => i.artifactId));
+    return {
+      fromReview: true,
+      engineArgs: {
+        selectionSize: pending.selectionSize,
+        artifacts: confirmed.filter((a) => eligible.has(a.id)),
+        authorizedRoots: this.activeState.authorizedRoots,
+        confirmationToken: recheck.confirmationToken,
+        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride
+      },
+      dropped,
+      missing
+    };
+  }
 
+  finishQuarantine(plan, moved) {
+    const result = moved
+      ? { ...moved, blockedItems: [...plan.dropped, ...(moved.blockedItems || [])] }
+      : { batchId: null, quarantinedEntries: [], blockedItems: plan.dropped };
+    if (plan.fromReview) result.leftSinceReview = result.blockedItems.length + plan.missing;
     // Refresh Knowledge Graph and Treemap after quarantining items
     this.rebuildActiveGraph();
     return {
@@ -712,6 +735,19 @@ export class ArtifactAtlasService {
     };
   }
 
+  /**
+   * Review-first files grouped by folder, so they are decided a group at a time. Worked out once
+   * per scan, move or restore (the cache is keyed by what can change them).
+   */
+  reviewGroups({ kept = new Set(), now = Date.now() } = {}) {
+    const state = this.activeState;
+    const stamp = `${state.scan?.id || ''}:${(state.artifacts || []).reduce((n, a) => n + (a.quarantined ? 1 : 0), 0)}:${[...kept].sort().join('|')}`;
+    if (!this.reviewGroupsCache || this.reviewGroupsCache.stamp !== stamp || this.reviewGroupsCache.artifacts !== state.artifacts) {
+      this.reviewGroupsCache = { stamp, artifacts: state.artifacts, result: buildReviewGroups(state, { kept, now }) };
+    }
+    return this.reviewGroupsCache.result;
+  }
+
   /** Suggested cleanups for the Insights card: folders of the app's own files left untouched. */
   cleanupSuggestions({ minDays = SUGGESTION_DEFAULT_DAYS, now = Date.now() } = {}) {
     const days = SUGGESTION_DAY_CHOICES.includes(Number(minDays)) ? Number(minDays) : SUGGESTION_DEFAULT_DAYS;
@@ -782,7 +818,7 @@ export class ArtifactAtlasService {
   }
 
   /** Moves the confirmed list to the Quarantine, to be deleted on its date unless made again. */
-  async executeUnusedCleanup({ token, now = Date.now(), onProgress } = {}) {
+  async executeUnusedCleanup({ token, now = Date.now(), onProgress, signal = null } = {}) {
     const pending = this.pendingUnusedCleanup;
     if (!pending || !token || token !== pending.token || now - pending.preparedAt > 10 * 60 * 1000) {
       throw new Error('CLEANUP_CONFIRMATION_EXPIRED: Open the list again and confirm.');
@@ -805,7 +841,7 @@ export class ArtifactAtlasService {
         selectionSize: selected.length,
         schedule: { purgeAt: pending.purgeAt, scheduledBy: pending.scheduledBy || SCHEDULED_BY_UNUSED_CLEANUP }
       },
-      { onProgress }
+      { onProgress, signal }
     );
     this.rebuildActiveGraph();
     return {

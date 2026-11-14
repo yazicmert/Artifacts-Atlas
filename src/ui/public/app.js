@@ -2703,17 +2703,20 @@ function pastLimitCardHtml(scan) {
 async function renderInsightsView() {
   const body = document.getElementById('insights-body');
   if (!body || !uiState.activeState?.scan) return;
-  const [leftovers, copies, unused, suggestions, shared] = await Promise.all([
+  const [leftovers, copies, unused, suggestions, shared, reviewGroups] = await Promise.all([
     apiRequest('/api/project-leftovers', 'GET').then((r) => r.leftovers).catch(() => null),
     apiRequest('/api/insights/copies', 'GET').then((r) => r.copies).catch(() => null),
     // A preview: it never replaces a confirmation that is open
     apiRequest('/api/cleanup/unused/prepare', 'POST', { minDays: uiState.unusedDays || 30, preview: true }).then((r) => r.cleanup).catch(() => null),
     apiRequest('/api/cleanup/suggestions', 'POST', { minDays: uiState.suggestionDays || 7 }).then((r) => r.suggestions).catch(() => null),
-    apiRequest('/api/insights/shared-caches', 'GET').then((r) => r.shared).catch(() => null)
+    apiRequest('/api/insights/shared-caches', 'GET').then((r) => r.shared).catch(() => null),
+    apiRequest('/api/review-groups', 'GET').then((r) => r.review).catch(() => null)
   ]);
   uiState.suggestions = suggestions;
+  uiState.reviewGroups = reviewGroups;
   const cards = [
     suggestionsCardHtml(suggestions),
+    reviewGroupsCardHtml(reviewGroups),
     unusedCardHtml(unused),
     growthCardHtml(uiState.activeState.growth),
     pastLimitCardHtml(uiState.activeState.scan),
@@ -2775,6 +2778,59 @@ function suggestionsCardHtml(plan) {
      <div class="suggestion-list">${rows}</div>
      ${plan.otherGroups ? `<p class="insight-quiet">${pluralize(plan.otherGroups, 'smaller folder')} not listed.</p>` : ''}
      <p class="insight-quiet">Only files the app keeps for itself and can make again, such as caches, temporary files and logs: never your projects, settings, skills, plug-ins, backups, session records, protected or high-risk files, or files of a session that may be running. They move to the Quarantine and are deleted after ${plan.deleteAfterDays} days; one the app makes again is kept.</p>`,
+    { wide: true }
+  );
+}
+
+/* Review-first files, a folder at a time: what each group is, how big, which sessions, and one
+   decision for all of it. A move goes through the usual review and can be put back. */
+const REVIEW_KIND_LABELS = { remade: 'Made again by the app', 'session-work': 'Session working files', unrecognised: 'Not recognised' };
+
+function reviewGroupRowHtml(g, { kept = false } = {}) {
+  const meta = [
+    `${pluralize(g.count, 'file')}`,
+    g.sessionCount ? pluralize(g.sessionCount, 'session') : '',
+    g.newestChange ? `last changed ${formatDate(g.newestChange)}` : ''
+  ].filter(Boolean).join(' · ');
+  return `
+    <div class="suggestion-row review-group-row">
+      <span class="suggestion-main">
+        <span class="suggestion-folder mono" title="${escapeHtml(g.label)}">${escapeHtml(shortPath(g.label))}</span>
+        <span class="suggestion-meta">${g.kind === 'unrecognised' ? '' : `<strong>${escapeHtml(REVIEW_KIND_LABELS[g.kind] || '')}</strong> · `}${escapeHtml(g.what)}</span>
+        <span class="suggestion-meta">${escapeHtml(meta)}${g.inUse ? ' · <span class="review-in-use">a session may still be running; its files stay</span>' : ''}</span>
+        <span class="suggestion-meta">For example: <span class="mono">${g.examples.map(escapeHtml).join(', ')}</span></span>
+        <span class="review-group-actions">
+          ${kept
+            ? `<button class="link-btn" type="button" data-review-unkeep="${escapeHtml(g.id)}">Show Again</button>`
+            : `<button class="secondary-btn" type="button" data-review-move="${escapeHtml(g.id)}">Move to Quarantine…</button>
+               <button class="link-btn" type="button" data-review-keep="${escapeHtml(g.id)}">Keep</button>`}
+          <button class="link-btn" type="button" data-reveal="review-group:${escapeHtml(g.id)}" data-label="${escapeHtml(shortPath(g.label))}">Show in ${escapeHtml(fileManagerName())}</button>
+        </span>
+      </span>
+      <span class="insight-num">${formatBytes(g.bytes)}</span>
+    </div>`;
+}
+
+function reviewGroupsCardHtml(review) {
+  if (!review) return '';
+  if (!review.groups.length && !review.kept.length) return '';
+  const rows = review.groups.map((g) => reviewGroupRowHtml(g)).join('');
+  const kept = review.kept.length
+    ? `<details class="review-kept"><summary>${pluralize(review.kept.length, 'group')} you kept</summary>${review.kept.map((g) => reviewGroupRowHtml(g, { kept: true })).join('')}</details>`
+    : '';
+  return insightCard(
+    'Review first, by folder',
+    `<div class="insight-split">
+       <div>
+         <div class="insight-figure">${pluralize(review.groups.length, 'group')}</div>
+         <div class="insight-meta">${review.count.toLocaleString()} review-first files, ${formatBytes(review.bytes)}: decide a folder at a time</div>
+       </div>
+       <div><p class="insight-quiet">Moving a group shows the usual review, then puts the files in the Quarantine: you can put them back, and they free their space when you empty old files after 30 days. Keep hides a group until you show it again.</p></div>
+     </div>
+     ${rows ? `<div class="suggestion-list">${rows}</div>` : '<p class="insight-quiet">Every group is decided.</p>'}
+     ${review.otherGroups ? `<p class="insight-quiet">${pluralize(review.otherGroups, 'smaller group')} not listed.</p>` : ''}
+     ${review.notListed ? `<p class="insight-quiet">${review.notListed.toLocaleString()} files past the file limit were measured but not listed, so they are in no group.</p>` : ''}
+     ${kept}`,
     { wide: true }
   );
 }
@@ -2954,6 +3010,30 @@ function bindUnusedEvents() {
 function bindInsightsActions(box) {
   box.querySelector('#unused-clean-btn')?.addEventListener('click', openUnusedCleanup);
   box.querySelector('#suggestion-clean-btn')?.addEventListener('click', openSuggestedCleanup);
+  box.querySelectorAll('[data-review-move]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      try {
+        const count = await selectByDescription({ kind: 'review-group', groupId: btn.dataset.reviewMove });
+        if (count === 0) {
+          showToast('Nothing left to move in this group.');
+          return;
+        }
+        await openCleanupReviewModal(false);
+      } catch (err) {
+        showToast(`Could not select the group: ${err.message}`);
+      }
+    })
+  );
+  const setKept = async (groupId, keep) => {
+    try {
+      await apiRequest('/api/review-groups/keep', 'POST', { groupId, keep });
+      renderInsightsView();
+    } catch (err) {
+      showToast(`Could not save that: ${err.message}`);
+    }
+  };
+  box.querySelectorAll('[data-review-keep]').forEach((btn) => btn.addEventListener('click', () => setKept(btn.dataset.reviewKeep, true)));
+  box.querySelectorAll('[data-review-unkeep]').forEach((btn) => btn.addEventListener('click', () => setKept(btn.dataset.reviewUnkeep, false)));
   box.querySelector('#shared-measure-btn')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
     e.target.textContent = 'Measuring…';
@@ -3472,7 +3552,7 @@ function renderQuarantineVaultView() {
             : 'Put back.'
         );
       } catch (err) {
-        showToast(`Could not put it back: ${err.message}`);
+        showToast(`Could not put it back: ${String(err.message || '').replace(/^BUSY_MOVING: /, '')}`);
       }
     });
   });
@@ -3691,6 +3771,7 @@ function bindContextualToolbarEvents() {
 async function openCleanupReviewModal(allowHighRiskSingleOverride = false) {
   const artifactIds = Array.from(uiState.selectedArtifactIds);
   if (artifactIds.length === 0) return;
+  if (artifactIds.length > 2000) showToast(`Checking ${artifactIds.length.toLocaleString()} files…`);
 
   try {
     uiState.allowHighRiskSingleOverride = allowHighRiskSingleOverride;
@@ -3882,12 +3963,35 @@ function bindModalEvents() {
 
   document.getElementById('confirm-quarantine-btn').addEventListener('click', async () => {
     if (!uiState.pendingReview?.confirmationToken) return;
+    const confirmBtn = document.getElementById('confirm-quarantine-btn');
+    if (confirmBtn.disabled) return;
+    // A large selection takes minutes: the button says so and the count moves
+    const label = confirmBtn.textContent;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = 'Moving…';
+    let progress = null;
     try {
-      const res = await apiRequest('/api/cleanup/quarantine', 'POST', {
+      // Started in the background; the window asks how far it is and takes the result at the end
+      await apiRequest('/api/cleanup/quarantine', 'POST', {
         artifactIds: Array.from(uiState.selectedArtifactIds),
         confirmationToken: uiState.pendingReview.confirmationToken,
-        allowHighRiskSingleOverride: uiState.allowHighRiskSingleOverride
+        allowHighRiskSingleOverride: uiState.allowHighRiskSingleOverride,
+        background: true
       });
+      await new Promise((resolve) => {
+        progress = setInterval(async () => {
+          try {
+            const state = await apiRequest('/api/cleanup/quarantine/progress', 'GET');
+            const p = state.progress;
+            if (p && p.total) confirmBtn.textContent = `Moving ${p.done.toLocaleString()} of ${p.total.toLocaleString()}…`;
+            if (!p) resolve();
+          } catch {
+            // Asked again on the next tick
+          }
+        }, 700);
+      });
+      clearInterval(progress);
+      const res = await apiRequest('/api/cleanup/quarantine/result', 'GET');
 
       const leftFiles = res.leftSinceReview > 0 ? res.blockedItems || [] : [];
       if (leftFiles.length > 0) {
@@ -3906,6 +4010,10 @@ function bindModalEvents() {
 
       showToast(`Moved ${pluralize(res.quarantinedEntries.length, 'file')} to Quarantine.`);
     } catch (err) {
+      if (/BUSY_MOVING/.test(err.message || '')) {
+        showToast(err.message.replace(/^BUSY_MOVING: /, ''));
+        return;
+      }
       const expired = /EXPLICIT_CONFIRMATION_REQUIRED/.test(err.message || '');
       showToast(
         expired
@@ -3913,6 +4021,10 @@ function bindModalEvents() {
           : `Could not move to Quarantine: ${err.message}`
       );
       if (expired) closeCleanup();
+    } finally {
+      if (progress) clearInterval(progress);
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = label;
     }
   });
 
