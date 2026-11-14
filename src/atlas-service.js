@@ -584,9 +584,9 @@ export class ArtifactAtlasService {
    * The same move in batches, with a pause between them, so the app keeps answering while tens
    * of thousands of files move (a large selection takes minutes). onProgress gets { done, total }.
    */
-  async executeQuarantineAsync(args, { onProgress = () => {} } = {}) {
+  async executeQuarantineAsync(args, { onProgress = () => {}, signal = null } = {}) {
     const plan = this.planQuarantine(args);
-    const moved = plan.engineArgs ? await this.cleanupEngine.executeQuarantineAsync(plan.engineArgs, { onProgress }) : null;
+    const moved = plan.engineArgs ? await this.cleanupEngine.executeQuarantineAsync(plan.engineArgs, { onProgress, signal }) : null;
     return this.finishQuarantine(plan, moved);
   }
 
@@ -804,7 +804,7 @@ export class ArtifactAtlasService {
   }
 
   /** Moves the confirmed list to the Quarantine, to be deleted on its date unless made again. */
-  async executeUnusedCleanup({ token, now = Date.now(), onProgress } = {}) {
+  async executeUnusedCleanup({ token, now = Date.now(), onProgress, signal = null } = {}) {
     const pending = this.pendingUnusedCleanup;
     if (!pending || !token || token !== pending.token || now - pending.preparedAt > 10 * 60 * 1000) {
       throw new Error('CLEANUP_CONFIRMATION_EXPIRED: Open the list again and confirm.');
@@ -827,7 +827,7 @@ export class ArtifactAtlasService {
         selectionSize: selected.length,
         schedule: { purgeAt: pending.purgeAt, scheduledBy: pending.scheduledBy || SCHEDULED_BY_UNUSED_CLEANUP }
       },
-      { onProgress }
+      { onProgress, signal }
     );
     this.rebuildActiveGraph();
     return {

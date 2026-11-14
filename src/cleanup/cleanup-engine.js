@@ -340,9 +340,11 @@ export class CleanupEngine {
    * The same as executeQuarantine, in batches with a pause between them so the app stays
    * responsive while tens of thousands of files move. onProgress gets { done, total }.
    */
-  async executeQuarantineAsync(args, { onProgress = () => {}, batchSize = 200 } = {}) {
+  async executeQuarantineAsync(args, { onProgress = () => {}, batchSize = 200, signal = null } = {}) {
     const begun = this.beginQuarantine(args);
     if (begun.result) return begun.result;
+    // Stopped (the app is quitting): the move ends after the file in hand, saving every record
+    begun.shouldStop = () => Boolean(signal?.aborted);
     const steps = this.quarantineSteps(begun);
     let step = steps.next();
     let n = 0;
@@ -350,6 +352,7 @@ export class CleanupEngine {
       if (++n % batchSize === 0) {
         onProgress(step.value);
         await new Promise((resolve) => setImmediate(resolve));
+
       }
       step = steps.next();
     }
@@ -385,7 +388,7 @@ export class CleanupEngine {
   }
 
   /** Moves the reviewed files one by one, yielding after each. Records are saved in groups. */
-  *quarantineSteps({ review, artifacts, authorizedRoots, schedule }) {
+  *quarantineSteps({ review, artifacts, authorizedRoots, schedule, shouldStop = null }) {
     const batchId = `qbatch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const batchDir = path.join(this.quarantineRoot, 'batches', batchId);
     fs.mkdirSync(batchDir, { recursive: true });
@@ -403,8 +406,13 @@ export class CleanupEngine {
     let done = 0;
     const scheduledBy = schedule ? schedule.scheduledBy || SCHEDULED_BY_UNUSED_CLEANUP : null;
 
+    let stopped = false;
     try {
       for (const item of review.eligibleItems) {
+        if (shouldStop?.()) {
+          stopped = true;
+          break;
+        }
         done += 1;
         const artifact = artifactById.get(item.artifactId);
         // Only the risks this kind of cleanup allows may be scheduled for deletion
@@ -494,7 +502,8 @@ export class CleanupEngine {
       batchId,
       batchManifestPath,
       quarantinedEntries,
-      blockedItems: runtimeBlocked
+      blockedItems: runtimeBlocked,
+      ...(stopped ? { stopped: true, notMoved: total - done } : {})
     };
   }
 
@@ -543,6 +552,57 @@ export class CleanupEngine {
       this.sqliteStore.saveQuarantineEntry(entryModel);
     }
     return entryModel;
+  }
+
+  /**
+   * Adds back the records of files that are in the vault with a manifest but no SQLite row: a
+   * move cut off between saving groups of records. The payload must be a regular file inside the
+   * vault; the record comes from the manifest, with paths from the vault layout. Returns how many.
+   */
+  reconcileManifests() {
+    if (!this.sqliteStore) return 0;
+    const batchesDir = path.join(this.quarantineRoot, 'batches');
+    let batchNames;
+    try {
+      batchNames = fs.readdirSync(batchesDir);
+    } catch {
+      return 0;
+    }
+    const known = new Set(this.sqliteStore.listQuarantineEntries().map((e) => e.id));
+    const missing = [];
+    for (const batchName of batchNames) {
+      if (!/^[A-Za-z0-9_-]+$/.test(batchName)) continue;
+      let entryNames;
+      try {
+        entryNames = fs.readdirSync(path.join(batchesDir, batchName));
+      } catch {
+        continue;
+      }
+      for (const entryId of entryNames) {
+        if (known.has(entryId) || !/^[A-Za-z0-9_-]+$/.test(entryId)) continue;
+        const entryDir = path.join(batchesDir, batchName, entryId);
+        const payload = fs.lstatSync(path.join(entryDir, 'payload'), { throwIfNoEntry: false });
+        if (!payload || !payload.isFile()) continue;
+        let manifest;
+        try {
+          manifest = JSON.parse(fs.readFileSync(path.join(entryDir, 'manifest.json'), 'utf8'));
+        } catch {
+          continue;
+        }
+        if (manifest.id !== entryId || !manifest.originalPath) continue;
+        missing.push(
+          createQuarantineEntryModel({
+            ...manifest,
+            batchId: batchName,
+            quarantinePath: path.join(entryDir, 'payload'),
+            manifestPath: path.join(entryDir, 'manifest.json'),
+            status: 'QUARANTINED'
+          })
+        );
+      }
+    }
+    if (missing.length) this.sqliteStore.saveQuarantineEntries(missing);
+    return missing.length;
   }
 
   /**

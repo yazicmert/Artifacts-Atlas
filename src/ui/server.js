@@ -340,6 +340,13 @@ export function createAtlasServer(options = {}) {
               isDemoEnvironment: true
             })
       );
+      // Records of a move that was cut off (the app was killed mid-move) are taken back from
+      // the manifests on disk, so every file in the vault is listed and can be put back
+      try {
+        services.get(mode).cleanupEngine.reconcileManifests();
+      } catch {
+        // The vault may not exist yet
+      }
     }
     return services.get(mode);
   };
@@ -563,6 +570,9 @@ export function createAtlasServer(options = {}) {
   // The one move (or deletion) running now, with its progress. Files move in batches and the
   // app keeps answering meanwhile; anything else that moves, restores, deletes or rescans waits.
   let moveJob = null;
+  // How to stop that move at a file boundary when the app quits, and the promise to wait for
+  let moveStop = null;
+  let moveRun = null;
   // The outcome of a move started in the background, until the window takes it
   let lastMoveResult = null;
   const GUARDED_WHILE_MOVING = new Set([
@@ -1255,6 +1265,7 @@ export function createAtlasServer(options = {}) {
         moveJob = { kind: 'quarantine', done: 0, total: Array.isArray(body.artifactIds) ? body.artifactIds.length : 0 };
         lastMoveResult = null;
         const service = activeService();
+        moveStop = new AbortController();
         const run = service
           .executeQuarantineAsync(
             {
@@ -1262,13 +1273,15 @@ export function createAtlasServer(options = {}) {
               confirmationToken: body.confirmationToken,
               allowHighRiskSingleOverride: Boolean(body.allowHighRiskSingleOverride)
             },
-            { onProgress: (p) => (moveJob = { kind: 'quarantine', ...p }) }
+            { onProgress: (p) => (moveJob = { kind: 'quarantine', ...p }), signal: moveStop.signal }
           )
           .then((result) => ({ ok: true, ...result, updatedGraph: undefined, activeState: stateForClient(service.activeState) }))
           .catch((err) => ({ ok: false, error: err.message }))
           .finally(() => {
             moveJob = null;
+            moveStop = null;
           });
+        moveRun = run;
         // The window asks for the result when the move is done, so a long move never runs into
         // a request time limit; without `background` the answer waits for the move
         if (body.background) {
@@ -1315,12 +1328,16 @@ export function createAtlasServer(options = {}) {
         const body = await readJsonBody(req);
         try {
           moveJob = { kind: 'scheduled', done: 0, total: 0 };
-          const result = await activeService().executeUnusedCleanup({ token: body.token, now: clock(), onProgress: (p) => (moveJob = { kind: 'scheduled', ...p }) });
+          moveStop = new AbortController();
+          moveRun = activeService().executeUnusedCleanup({ token: body.token, now: clock(), onProgress: (p) => (moveJob = { kind: 'scheduled', ...p }), signal: moveStop.signal });
+          const result = await moveRun;
           return sendJson(res, 200, { ok: true, ...result, activeState: stateForClient(activeService().activeState) });
         } catch (err) {
           return sendJson(res, 409, { ok: false, error: err.message });
         } finally {
           moveJob = null;
+          moveStop = null;
+          moveRun = null;
         }
       }
       if (url.pathname === '/api/cleanup/unused/progress' && req.method === 'GET') {
@@ -1422,9 +1439,13 @@ export function createAtlasServer(options = {}) {
     }
   });
 
-  const shutdown = () => {
+  const shutdown = async () => {
     clearTimeout(scheduledDeletionTimer);
     clearInterval(scheduledDeletionInterval);
+    // A move in progress stops after the file in hand and saves its records before the
+    // databases close; the files not reached stay where they were
+    if (moveStop) moveStop.abort();
+    if (moveRun) await moveRun.catch(() => {});
     return new Promise((resolve) => {
       for (const svc of services.values()) {
         try {
