@@ -730,7 +730,7 @@ export class ArtifactAtlasService {
     return {
       minDays: days,
       dayChoices: SUGGESTION_DAY_CHOICES,
-      folders: groups.map((g) => ({ id: g.id, folder: g.folder, count: g.count, bytes: g.bytes })),
+      folders: groups.map((g) => ({ id: g.id, folder: g.folder, topLevel: g.topLevel, count: g.count, bytes: g.bytes })),
       reviewCount: candidates.filter((a) => a.cleanupClassification !== 'LOW').length,
       ...this.stageScheduledCleanup(candidates, { scheduledBy: SCHEDULED_BY_SUGGESTED_CLEANUP, now })
     };

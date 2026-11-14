@@ -2038,3 +2038,7 @@ button.crumb:hover {
   height: 100%;
   background: var(--ink-3);
 }
+.suggestion-top {
+  color: var(--ink-3);
+  font-family: var(--font-sans, inherit);
+}

@@ -2750,7 +2750,7 @@ function suggestionsCardHtml(plan) {
         <label class="suggestion-row">
           <input type="checkbox" data-suggestion="${escapeHtml(g.id)}"${on ? ' checked' : ''} />
           <span class="suggestion-main">
-            <span class="suggestion-folder mono" title="${escapeHtml(g.folder)}">${escapeHtml(shortPath(g.folder))}</span>
+            <span class="suggestion-folder mono" title="${escapeHtml(g.folder)}">${escapeHtml(shortPath(g.folder))}${g.topLevel ? '<span class="suggestion-top"> · files directly in it</span>' : ''}</span>
             <span class="suggestion-meta">${pluralize(g.count, 'file')} · ${escapeHtml(mix)}${g.newestChange ? ` · last changed ${escapeHtml(formatDate(g.newestChange))}` : ''}</span>
             <span class="suggestion-bar"><span style="width:${Math.max(2, Math.round((g.bytes / largest) * 100))}%"></span></span>
           </span>
@@ -2772,7 +2772,7 @@ function suggestionsCardHtml(plan) {
      </div>
      <div class="suggestion-list">${rows}</div>
      ${plan.otherGroups ? `<p class="insight-quiet">${pluralize(plan.otherGroups, 'smaller folder')} not listed.</p>` : ''}
-     <p class="insight-quiet">Only files the app keeps for itself: never your projects, protected or high-risk files, session records, or files of a session that may be running. They move to the Quarantine and are deleted after ${plan.deleteAfterDays} days; one the app makes again is kept.</p>`,
+     <p class="insight-quiet">Only files the app keeps for itself and can make again, such as caches, temporary files and logs: never your projects, settings, skills, plug-ins, backups, session records, protected or high-risk files, or files of a session that may be running. They move to the Quarantine and are deleted after ${plan.deleteAfterDays} days; one the app makes again is kept.</p>`,
     { wide: true }
   );
 }
@@ -2847,7 +2847,7 @@ async function openScheduledCleanup(prepare) {
     : `${pluralize(plan.count, 'safe file')} unused for ${plan.minDays} days`;
   const folders = suggested
     ? `<div class="kv-list">${plan.folders
-        .map((f) => `<div class="kv-item"><span class="kv-key mono">${escapeHtml(shortPath(f.folder))}</span><span class="kv-val">${pluralize(f.count, 'file')} · ${formatBytes(f.bytes)}</span></div>`)
+        .map((f) => `<div class="kv-item"><span class="kv-key mono">${escapeHtml(shortPath(f.folder))}${f.topLevel ? ' · files directly in it' : ''}</span><span class="kv-val">${pluralize(f.count, 'file')} · ${formatBytes(f.bytes)}</span></div>`)
         .join('')}</div>`
     : '';
   const reviewNote =

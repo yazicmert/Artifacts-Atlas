@@ -777,6 +777,14 @@ test('S13. Suggested cleanup: the app\'s own untouched folders, safe and review-
         else if (e.isFile()) fs.utimesSync(p, old, old);
       }
     };
+    // Things the user keeps in the app's folder, and plug-in files the app unpacked to its .tmp
+    const skillFile = path.join(demo.homeDir, '.claude', 'skills', 'my-skill', 'SKILL.md');
+    const backupFile = path.join(demo.homeDir, '.claude', 'backups', 'settings.json.bak');
+    const unpacked = path.join(demo.homeDir, '.claude', '.tmp', 'plugins', 'browser', 'deps', 'db_iter.cc');
+    for (const [file, text] of [[skillFile, '# my skill\n'], [backupFile, '{}\n'], [unpacked, '// unpacked\n']]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    }
     walk(demo.homeDir);
     const state = await service.scanAndAnalyze({ bundlePath: demo.appBundles.claude.bundlePath });
     const now = Date.now();
@@ -794,10 +802,18 @@ test('S13. Suggested cleanup: the app\'s own untouched folders, safe and review-
       assert.notEqual(a.artifactType, 'SESSION_HISTORY');
       assert.notEqual(a.provenanceConfidence, 'UNKNOWN');
     }
+    const offeredPaths = new Set(state.artifacts.filter((a) => ids.has(a.id)).map((a) => a.canonicalPath));
+    assert.ok(!offeredPaths.has(skillFile), 'a skill the user keeps there is never offered');
+    assert.ok(!offeredPaths.has(backupFile), 'a backup is never offered');
+    assert.equal(state.artifacts.find((a) => a.canonicalPath === unpacked).cleanupClassification, 'REVIEW');
+    assert.ok(offeredPaths.has(unpacked), 'review-first files the app unpacked to its .tmp are offered');
+    // Every offered file is inside one of the app's own data folders
+    const dataFolders = state.application.knownDataDirectories.map((d) => d.path);
+    for (const p of offeredPaths) assert.ok(dataFolders.some((d) => p.startsWith(d + path.sep)), p);
     assert.ok(prepared.reviewCount >= 1, 'review-first files of the app are offered');
     assert.ok(prepared.count > prepared.reviewCount, 'and safe ones');
     // A folder group names a place in the app's data folders
-    for (const g of plan.groups) assert.ok(state.authorizedRoots.some((r) => g.folder === r || g.folder.startsWith(r + path.sep)), g.folder);
+    for (const g of plan.groups) assert.ok(dataFolders.some((r) => g.folder === r || g.folder.startsWith(r + path.sep)), g.folder);
 
     // Files untouched for 7 days only: with 30 days nothing of a 20-day-old sample is offered
     assert.equal(service.cleanupSuggestions({ minDays: 30, now }).groups.length, 0);

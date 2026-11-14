@@ -3,8 +3,9 @@
  * while, grouped by folder so it can be cleared in one step. The files go to the Quarantine and
  * are deleted after SCHEDULED_DELETION_DAYS unless their app makes them again (AGENTS.md rule 2).
  *
- * Only files the app keeps for itself are offered: safe to remove or review first, in the app's
- * data folders (never a project folder), with a known origin, not a session record, user content,
+ * Only files the app keeps for itself are offered: inside the app's data folders, safe to
+ * remove, or review first where the kind or folder says the app makes it again (caches,
+ * temporary files, logs), with a known origin, not a session record, user content,
  * model data or checkpoint, not shared between sessions, not of a session that may be running,
  * unchanged for minDays and not opened in that time where the system records it.
  */
@@ -16,17 +17,60 @@ export const SUGGESTION_DEFAULT_DAYS = 7;
 const MAX_GROUPS = 12;
 const NEVER_SUGGESTED = new Set(['SESSION_HISTORY', 'USER_CONTENT', 'MODEL_DATA', 'CHECKPOINT']);
 const SUGGESTED_RISKS = new Set(['LOW', 'REVIEW']);
+// A review-first file is offered only when what it is, or the folder it is in, says the app
+// can make it again: caches, temporary files, logs and build outputs. Settings, skills,
+// plug-ins, backups and memory files in the same data folders never are.
+// Temporary files are not among them: that kind can rest on a name alone (a .bak backup)
+const REMADE_KINDS = new Set(['REGENERABLE_CACHE', 'LOG', 'BUILD_OUTPUT']);
+// Folders where the user keeps things in an app's data folder: never offered when review first
+const KEPT_FOLDERS = new Set(['backups', 'backup', 'skills', 'plugins', 'agents', 'commands', 'memory', 'settings', 'projects', 'sessions']);
+const REMADE_FOLDERS = new Set([
+  'tmp', '.tmp', 'temp', '.temp', 'cache', '.cache', 'caches', 'code cache', 'gpucache', 'shadercache',
+  'dawncache', 'grshadercache', 'log', 'logs', 'crashpad', 'crashes'
+]);
 const DAY_MS = 86400000;
 
 const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
+/** The app's data folder a file is inside, or null: a file elsewhere is never suggested. */
+export function dataFolderOf(filePath, dataFolders) {
+  const file = norm(filePath);
+  let best = null;
+  for (const root of dataFolders) {
+    const r = norm(root);
+    if (r && file.startsWith(`${r}/`) && (!best || r.length > norm(best).length)) best = root;
+  }
+  return best;
+}
+
+function folderParts(filePath, root) {
+  return norm(filePath).slice(norm(root).length + 1).split('/').slice(0, -1).map((p) => p.toLowerCase());
+}
+
+/** A review-first file the app makes again: in a cache, temp or log folder, or a cache, log or build output by kind, and not in a folder the user keeps things in. */
+function remadeByApp(a, root) {
+  const parts = folderParts(a.canonicalPath, root);
+  const tmpIndex = parts.findIndex((p) => REMADE_FOLDERS.has(p));
+  // Below a temp or cache folder anything goes (an unpacked plug-in); above it, a kept folder rules it out
+  const above = tmpIndex === -1 ? parts : parts.slice(0, tmpIndex);
+  if (above.some((p) => KEPT_FOLDERS.has(p))) return false;
+  return tmpIndex !== -1 || REMADE_KINDS.has(a.artifactType);
+}
 
 /** The files that may be suggested, as of `now`. */
 export function suggestionCandidates(state, { minDays = SUGGESTION_DEFAULT_DAYS, now = Date.now() } = {}) {
   const cutoff = now - minDays * DAY_MS;
   const costs = computePromptCosts(state, { now });
   const running = (a) => (a.sessionIds || []).some((sid) => costs.sessions[sid]?.possiblyRunning);
+  const dataFolders = (state.application?.knownDataDirectories || []).map((d) => d.path).filter(Boolean);
   return (state.artifacts || []).filter((a) => {
     if (a.quarantined || !SUGGESTED_RISKS.has(a.cleanupClassification)) return false;
+    // Only inside the app's own data folders: never a file a session wrote anywhere else
+    const root = dataFolderOf(a.canonicalPath, dataFolders);
+    if (!root) return false;
+    if (a.cleanupClassification === 'REVIEW' && !remadeByApp(a, root)) {
+      return false;
+    }
     if (a.workspaceId || NEVER_SUGGESTED.has(a.artifactType)) return false;
     if (a.provenanceConfidence === 'UNKNOWN') return false;
     if ((a.sessionIds || []).length > 1 || running(a)) return false;
@@ -42,38 +86,31 @@ export function suggestionCandidates(state, { minDays = SUGGESTION_DEFAULT_DAYS,
  * below it (`~/.codex` + `.tmp`), so a suggestion names one place the user recognises.
  */
 export function suggestionFolder(filePath, roots) {
-  const file = norm(filePath);
-  let best = null;
-  for (const root of roots) {
-    const r = norm(root);
-    if (file.startsWith(`${r}/`) && (!best || r.length > norm(best).length)) best = root;
-  }
-  if (!best) {
-    const cut = file.lastIndexOf('/');
-    return cut > 0 ? filePath.slice(0, cut) : filePath;
-  }
-  const rest = file.slice(norm(best).length + 1).split('/');
-  if (rest.length <= 1) return best;
+  const best = dataFolderOf(filePath, roots);
+  if (!best) return { folder: null, topLevel: false };
+  const rest = norm(filePath).slice(norm(best).length + 1).split('/');
+  // A file directly in the data folder is grouped as that folder's own files, not the folder
+  if (rest.length <= 1) return { folder: best, topLevel: true };
   const sep = String(best).includes('\\') && !String(best).includes('/') ? '\\' : '/';
-  return `${String(best).replace(/[\\/]+$/, '')}${sep}${rest[0]}`;
+  return { folder: `${String(best).replace(/[\\/]+$/, '')}${sep}${rest[0]}`, topLevel: false };
 }
 
-export function groupId(folder) {
-  return `sg_${crypto.createHash('sha256').update(norm(folder)).digest('hex').slice(0, 16)}`;
+export function groupId(folder, topLevel = false) {
+  return `sg_${crypto.createHash('sha256').update(`${topLevel ? 'top:' : ''}${norm(folder)}`).digest('hex').slice(0, 16)}`;
 }
 
 /** Candidates grouped by folder, largest first. Each file is counted once by its inode. */
 export function groupSuggestions(state, candidates) {
-  // The folders the scan was allowed to walk (the app's data folders)
-  const roots = state.authorizedRoots || [];
+  const roots = (state.application?.knownDataDirectories || []).map((d) => d.path).filter(Boolean);
   const groups = new Map();
   const seen = new Set();
   for (const a of candidates) {
-    const folder = suggestionFolder(a.canonicalPath, roots);
-    const id = groupId(folder);
+    const { folder, topLevel } = suggestionFolder(a.canonicalPath, roots);
+    if (!folder) continue;
+    const id = groupId(folder, topLevel);
     const g =
       groups.get(id) ||
-      { id, folder, count: 0, bytes: 0, safeCount: 0, reviewCount: 0, newestChange: null, kinds: new Map(), artifactIds: [] };
+      { id, folder, topLevel, count: 0, bytes: 0, safeCount: 0, reviewCount: 0, newestChange: null, kinds: new Map(), artifactIds: [] };
     const key = a.physicalInodeKey || a.canonicalPath;
     const bytes = seen.has(key) ? 0 : a.sizeBytes || 0;
     seen.add(key);
