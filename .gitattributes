@@ -1,0 +1,3 @@
+# Agent skills keep LF line endings so every agent reads their front matter the same way
+.agents/skills/** text eol=lf
+.claude/skills/** text eol=lf
