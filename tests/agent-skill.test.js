@@ -47,7 +47,7 @@ test('SK1: the skill is the same in every folder the agents read, with a name an
     }
   }
   const skill = fs.readFileSync(path.join(canonical, 'SKILL.md'), 'utf8');
-  const front = skill.match(/^---\n([\s\S]*?)\n---\n/);
+  const front = skill.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---\n/);
   assert.ok(front, 'SKILL.md starts with front matter');
   assert.match(front[1], /^name: artifact-atlas$/m);
   const description = front[1].match(/^description: (.+)$/m)?.[1] || '';
