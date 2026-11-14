@@ -401,19 +401,20 @@ export class CleanupEngine {
     };
     const total = review.eligibleItems.length;
     let done = 0;
+    const scheduledBy = schedule ? schedule.scheduledBy || SCHEDULED_BY_UNUSED_CLEANUP : null;
 
     try {
       for (const item of review.eligibleItems) {
         done += 1;
         const artifact = artifactById.get(item.artifactId);
-        // Only safe files may be scheduled for deletion
-        if (schedule && artifact.cleanupClassification !== RiskCategory.LOW) {
+        // Only the risks this kind of cleanup allows may be scheduled for deletion
+        if (schedule && !scheduleAllows(scheduledBy, artifact.cleanupClassification)) {
           runtimeBlocked.push({
             artifactId: artifact.id,
             name: artifact.name,
             canonicalPath: artifact.canonicalPath,
             code: 'NOT_SAFE_FOR_SCHEDULED_DELETION',
-            reasons: ['Only files marked safe to remove can be deleted on a schedule.']
+            reasons: ['This file is not one that can be deleted on a schedule.']
           });
           yield { done, total };
           continue;
@@ -451,7 +452,7 @@ export class CleanupEngine {
               // The sessions it belonged to (IDs only), so Quarantine can name them later
               sessionIds: artifact.sessionIds || [],
               reason: artifact.cleanupExplanation,
-              ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy: SCHEDULED_BY_UNUSED_CLEANUP } : {})
+              ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy } : {})
             }
           });
           artifact.quarantined = true;
@@ -479,7 +480,7 @@ export class CleanupEngine {
           {
             batchId,
             createdAt: new Date().toISOString(),
-            ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy: SCHEDULED_BY_UNUSED_CLEANUP } : {}),
+            ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy } : {}),
             entries: quarantinedEntries
           },
           null,
@@ -801,7 +802,7 @@ export class CleanupEngine {
     }
     const scheduled = this.sqliteStore
       .listQuarantineEntries('QUARANTINED')
-      .filter((e) => e.scheduledBy === SCHEDULED_BY_UNUSED_CLEANUP && e.autoPurgeAt && !e.neededAgainAt);
+      .filter((e) => SCHEDULE_RISKS[e.scheduledBy] && e.autoPurgeAt && !e.neededAgainAt);
     const nowIso = new Date(now).toISOString();
     let changed = [];
     const flush = () => {
@@ -834,9 +835,9 @@ export class CleanupEngine {
       if (
         !checked ||
         checked.manifest.autoPurgeAt !== entry.autoPurgeAt ||
-        checked.manifest.scheduledBy !== SCHEDULED_BY_UNUSED_CLEANUP ||
-        entry.riskCategory !== RiskCategory.LOW ||
-        checked.manifest.riskCategory !== RiskCategory.LOW
+        checked.manifest.scheduledBy !== entry.scheduledBy ||
+        checked.manifest.riskCategory !== entry.riskCategory ||
+        !scheduleAllows(entry.scheduledBy, entry.riskCategory)
       ) {
         summary.skipped += 1;
         continue;
@@ -934,6 +935,20 @@ export const PURGE_MIN_AGE_DAYS = 30;
 /** Unused safe files moved by the cleanup the user confirmed are deleted after this many days. */
 export const SCHEDULED_DELETION_DAYS = 7;
 export const SCHEDULED_BY_UNUSED_CLEANUP = 'unused-cleanup';
+export const SCHEDULED_BY_SUGGESTED_CLEANUP = 'suggested-cleanup';
+
+/**
+ * The risks each scheduled cleanup may delete: unused safe files, or the suggested cleanup of an
+ * app's own folders (safe and review-first files, which the user confirmed by folder).
+ */
+export const SCHEDULE_RISKS = Object.freeze({
+  [SCHEDULED_BY_UNUSED_CLEANUP]: Object.freeze(['LOW']),
+  [SCHEDULED_BY_SUGGESTED_CLEANUP]: Object.freeze(['LOW', 'REVIEW'])
+});
+
+function scheduleAllows(scheduledBy, risk) {
+  return Boolean(SCHEDULE_RISKS[scheduledBy]?.includes(risk));
+}
 
 /**
  * Writes a file and fsyncs it so the recovery descriptor survives a crash right after the move.

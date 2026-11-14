@@ -77,6 +77,85 @@ export class PlatformServices {
       this.homeDir = rawHome;
     }
     this.platform = options.platform || process.platform;
+    // The environment the app's own folders may be moved by (CLAUDE_CONFIG_DIR, CODEX_HOME, …)
+    this.env = options.env || process.env;
+    this.liveHomeOverride = typeof options.liveHome === 'boolean' ? options.liveHome : null;
+    this.overridesCache = null;
+    // Tests name their own temp folders; otherwise this machine's are used
+    this.tempBases = Array.isArray(options.tempBases) ? options.tempBases : null;
+  }
+
+  /**
+   * True when this is the home folder of the user running the app, laid out like this system:
+   * not the sample, not a folder named with --home, not a Windows layout read on a Mac. Only
+   * then do this machine's temp folder and environment variables describe it.
+   */
+  get isLiveHome() {
+    if (this.liveHomeOverride !== null) return this.liveHomeOverride;
+    let real;
+    try {
+      real = fs.realpathSync(os.homedir());
+    } catch {
+      real = path.resolve(os.homedir());
+    }
+    return real === this.homeDir && (this.platform === 'win32') === (process.platform === 'win32');
+  }
+
+  /**
+   * Folders an app was told to use instead of its default by an environment variable the app
+   * itself reads: CLAUDE_CONFIG_DIR for Claude Code, CODEX_HOME for Codex. Used only for the
+   * live home, and only when the folder exists, is a real folder and is not a protected place.
+   */
+  appHomeOverrides() {
+    if (this.overridesCache) return this.overridesCache;
+    const out = {};
+    if (this.isLiveHome) {
+      for (const [id, name] of [['claude', 'CLAUDE_CONFIG_DIR'], ['codex', 'CODEX_HOME']]) {
+        const dir = this.validOverrideDir(this.env[name]);
+        if (dir) out[id] = dir;
+      }
+    }
+    this.overridesCache = out;
+    return out;
+  }
+
+  validOverrideDir(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    let raw = value.trim();
+    if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')) raw = path.join(this.homeDir, raw.slice(1));
+    if (!path.isAbsolute(raw)) return null;
+    let real;
+    try {
+      real = fs.realpathSync(raw);
+    } catch {
+      return null;
+    }
+    const stat = fs.lstatSync(real, { throwIfNoEntry: false });
+    if (!stat || !stat.isDirectory() || this.isProtectedSystemPath(real)) return null;
+    // Never a folder that holds the home folder
+    if (this.homeDir === real || this.homeDir.startsWith(real.endsWith(path.sep) ? real : real + path.sep)) return null;
+    return real;
+  }
+
+  /** Claude Code's or Codex's own folder: the moved one when set, else ~/.claude or ~/.codex. */
+  appHome(id) {
+    const moved = this.appHomeOverrides()[id];
+    if (moved) return moved;
+    return path.join(this.homeDir, id === 'codex' ? '.codex' : '.claude');
+  }
+
+  /**
+   * A path as the classification rules read it: inside a moved app folder, the same path
+   * under ~/.claude or ~/.codex, so a moved transcript is still a session record.
+   */
+  logicalPath(p) {
+    const overrides = this.appHomeOverrides();
+    for (const [id, dir] of Object.entries(overrides)) {
+      if (p === dir || p.startsWith(dir + path.sep)) {
+        return path.join(this.homeDir, id === 'codex' ? '.codex' : '.claude') + p.slice(dir.length);
+      }
+    }
+    return p;
   }
 
   /**

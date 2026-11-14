@@ -188,6 +188,102 @@ export function cursorRecordShapes(homeDir, { platform = process.platform } = {}
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * Cursor's agent transcripts (~/.cursor/projects/<project>/agent-transcripts): how they are laid
+ * out, never what they say. File names become patterns (IDs become placeholders) and only JSON
+ * lines are described, by field names and types; plain text is counted, not read.
+ */
+export function cursorTranscriptLayout(homeDir) {
+  const root = path.join(homeDir, '.cursor', 'projects');
+  const files = [];
+  const walk = (d, left, inTranscripts) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isSymbolicLink()) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory() && left > 0) walk(p, left - 1, inTranscripts || e.name === 'agent-transcripts');
+      else if (e.isFile() && inTranscripts) files.push(p);
+    }
+  };
+  walk(root, 4, false);
+  if (files.length === 0) return null;
+  const patterns = new Map();
+  for (const f of files) {
+    const parts = path.relative(root, f).split(path.sep);
+    const rel = parts.map((part, i) => {
+      if (i === 0) return '<project>';
+      // A file keeps its ending (.txt, .jsonl), the useful part; its name becomes a pattern
+      const ext = i === parts.length - 1 ? path.extname(part) : '';
+      return /^\.[a-z0-9]{1,8}$/i.test(ext) ? `${normalizeKey(part.slice(0, -ext.length))}${ext.toLowerCase()}` : normalizeKey(part);
+    });
+    const key = rel.join('/');
+    patterns.set(key, (patterns.get(key) || 0) + 1);
+  }
+  const jsonl = newestFiles(root, (n) => n.endsWith('.jsonl') || n.endsWith('.json'), { depth: 4, limit: 2 }).filter((f) => f.includes(`${path.sep}agent-transcripts${path.sep}`));
+  const shapes = [];
+  for (const file of jsonl) {
+    try {
+      const fd = fs.openSync(file, 'r');
+      const buffer = Buffer.alloc(256 * 1024);
+      const n = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      fs.closeSync(fd);
+      for (const line of buffer.subarray(0, n).toString('utf8').split('\n').slice(0, 200)) {
+        if (!/^\s*[[{]/.test(line)) continue;
+        try {
+          shapes.push(shapeOf(JSON.parse(line)));
+        } catch {
+          // Cut off at the end of the sample
+        }
+      }
+    } catch {
+      // Unreadable: only counted
+    }
+  }
+  return {
+    files: files.length,
+    layout: Object.fromEntries([...patterns].sort((a, b) => b[1] - a[1]).slice(0, 20)),
+    ...(shapes.length ? { jsonShape: mergeShapes(shapes) } : {})
+  };
+}
+
+/** Codex's own databases (state_*.sqlite) and archive: table and column names, file counts. */
+export function codexStoreLayout(homeDir) {
+  const codexHome = path.join(homeDir, '.codex');
+  let names = [];
+  try {
+    names = fs.readdirSync(codexHome);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const name of names.filter((n) => /^state(_\d+)?\.sqlite$/.test(n))) {
+    let db;
+    try {
+      db = new DatabaseSync(path.join(codexHome, name), { readOnly: true });
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+      out[normalizeKey(name)] = Object.fromEntries(
+        tables.filter((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t)).map((t) => [t, db.prepare(`PRAGMA table_info(${t})`).all().map((c) => `${c.name}:${c.type || '?'}`)])
+      );
+    } catch {
+      out[normalizeKey(name)] = { error: 'could not be opened read-only' };
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        // Already closed
+      }
+    }
+  }
+  const archived = newestFiles(path.join(codexHome, 'archived_sessions'), (n) => n.endsWith('.jsonl'), { depth: 5, limit: 100000 }).length;
+  if (archived) out.archivedRollouts = archived;
+  return Object.keys(out).length ? out : null;
+}
+
 /** Where the largest unclassified files are, by folder relative to the home folder. */
 export function unclassifiedFolders(state, homeDir, { limit = 20 } = {}) {
   const groups = new Map();
@@ -217,6 +313,8 @@ export function buildDiagnostics({ state, homeDir, platform, appVersion }) {
   const unclassified = unclassifiedFolders(state, homeDir);
   const codex = codexRecordShapes(homeDir);
   const cursor = cursorRecordShapes(homeDir, { platform });
+  const cursorTranscripts = cursorTranscriptLayout(homeDir);
+  const codexStore = codexStoreLayout(homeDir);
   const lines = [
     `Artifact Atlas ${appVersion || ''} diagnostics (${platform})`,
     `Scanned: ${state?.application?.name || 'nothing yet'}`,
@@ -230,8 +328,14 @@ export function buildDiagnostics({ state, homeDir, platform, appVersion }) {
     'Codex record shapes (field names and types only):',
     codex ? JSON.stringify(codex, null, 1) : '  (no Codex records found)',
     '',
+    'Codex databases and archive (table and column names, counts):',
+    codexStore ? JSON.stringify(codexStore, null, 1) : '  (none found)',
+    '',
     'Cursor record shapes (field names and types only):',
-    cursor ? JSON.stringify(cursor, null, 1) : '  (no Cursor database found)'
+    cursor ? JSON.stringify(cursor, null, 1) : '  (no Cursor database found)',
+    '',
+    'Cursor agent transcripts (layout only; text is not read):',
+    cursorTranscripts ? JSON.stringify(cursorTranscripts, null, 1) : '  (none found)'
   ];
   return lines.join('\n');
 }

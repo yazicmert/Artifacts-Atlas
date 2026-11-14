@@ -9,7 +9,7 @@ Artifact Atlas measures what an AI app leaves on disk and ties files to the sess
 
 ## Steps
 
-1. **Ask first.** The command reads this app's folders in the user's home folder: file names, sizes and dates, and the app's session records for their structure only (session IDs, times, tool names, file paths). It never prints or stores conversation text, and it writes nothing. Ask the user once in this conversation whether that is fine. Do not run it before they say yes.
+1. **Ask first.** The command reads this app's folders in the user's home folder (for Claude Code also its own folder in the system temp folder): file names, sizes and dates, and the app's session records for their structure only (session IDs, times, tool names, file paths). It never prints or stores conversation text, and it writes nothing. Ask the user once in this conversation whether that is fine. Do not run it before they say yes.
 
 2. **Run the summary** with Node.js 22.13 or newer. The script is `scripts/leftovers.mjs` in this skill's folder (`${CLAUDE_SKILL_DIR}` in Claude Code; elsewhere, the folder this file is in).
 

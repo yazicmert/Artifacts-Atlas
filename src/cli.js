@@ -397,7 +397,7 @@ async function runCliLeftovers() {
   const readsRealHome = !homeFlag || realPath(homeFlag) === realPath(os.homedir());
   if (readsRealHome && !hasFlag('--read-home')) {
     console.error(
-      'Artifact Atlas reads this app\'s folders in your home folder: file names, sizes and dates, and the app\'s session records ' +
+      'Artifact Atlas reads this app\'s folders in your home folder (for Claude Code also its folder in the temp folder): file names, sizes and dates, and the app\'s session records ' +
         'for their structure only (session IDs, times, tool names, file paths). It never prints or stores conversation text.\n' +
         'Ask the user first, then run the same command with --read-home.'
     );

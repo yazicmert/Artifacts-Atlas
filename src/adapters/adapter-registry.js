@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { claudeTempLocations } from '../discovery/claude-temp.js';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import {
@@ -78,18 +79,24 @@ export class ClaudeCodeAdapter {
     if (platformServices.isWindowsLayout) {
       const appData = platformServices.getWindowsAppDataDirs();
       return [
-        { role: 'CLAUDE_CLI_HOME', path: path.join(home, '.claude') },
-        { role: 'APP_SUPPORT', path: path.join(appData.roaming, 'Claude') }
+        { role: 'CLAUDE_CLI_HOME', path: platformServices.appHome('claude') },
+        { role: 'APP_SUPPORT', path: path.join(appData.roaming, 'Claude') },
+        { role: 'CLI_CACHE', path: path.join(appData.local, 'claude-cli-nodejs') },
+        ...claudeTempLocations(platformServices)
       ];
     }
     const dirs = [
-      { role: 'CLAUDE_CLI_HOME', path: path.join(home, '.claude') },
+      { role: 'CLAUDE_CLI_HOME', path: platformServices.appHome('claude') },
       { role: 'APP_SUPPORT', path: path.join(home, 'Library', 'Application Support', 'Claude') },
       { role: 'LOGS', path: path.join(home, 'Library', 'Logs', 'Claude') },
       {
         role: 'CACHES',
         path: path.join(home, 'Library', 'Caches', bundleId || 'com.anthropic.claudefordesktop')
-      }
+      },
+      // The command-line tool's own cache (MCP server logs), on macOS and on Linux
+      { role: 'CLI_CACHE', path: path.join(home, 'Library', 'Caches', 'claude-cli-nodejs') },
+      { role: 'CLI_CACHE', path: path.join(home, '.cache', 'claude-cli-nodejs') },
+      ...claudeTempLocations(platformServices)
     ];
     return dirs;
   }
@@ -100,7 +107,7 @@ export class ClaudeCodeAdapter {
     const operations = [];
     const malformedRecords = [];
 
-    const claudeProjectsDir = path.join(platformServices.homeDir, '.claude', 'projects');
+    const claudeProjectsDir = path.join(platformServices.appHome('claude'), 'projects');
     const candidateDirs = [claudeProjectsDir];
     for (const root of authorizedRoots) {
       const nestedProjects = path.join(root, '.claude', 'projects');
@@ -537,10 +544,10 @@ export class CodexAdapter {
   getCandidateDataDirectories({ bundleId, platformServices }) {
     const home = platformServices.homeDir;
     if (platformServices.isWindowsLayout) {
-      return [{ role: 'CODEX_HOME', path: path.join(home, '.codex') }];
+      return [{ role: 'CODEX_HOME', path: platformServices.appHome('codex') }];
     }
     return [
-      { role: 'CODEX_HOME', path: path.join(home, '.codex') },
+      { role: 'CODEX_HOME', path: platformServices.appHome('codex') },
       { role: 'APP_SUPPORT', path: path.join(home, 'Library', 'Application Support', 'Codex') },
       { role: 'CACHES', path: path.join(home, 'Library', 'Caches', bundleId || 'com.openai.codex') }
     ];
@@ -552,12 +559,15 @@ export class CodexAdapter {
     const operations = [];
     const malformedRecords = [];
 
-    const sessionsDir = path.join(platformServices.homeDir, '.codex', 'sessions');
-    const candidateRoots = [sessionsDir];
+    // Live sessions, and the ones Codex archived (same rollout files, in archived_sessions)
+    const codexHome = platformServices.appHome('codex');
+    const candidateRoots = [path.join(codexHome, 'sessions'), path.join(codexHome, 'archived_sessions')];
     for (const root of authorizedRoots) {
-      const sub = path.join(root, '.codex', 'sessions');
-      if (fs.existsSync(sub) && !candidateRoots.includes(sub)) {
-        candidateRoots.push(sub);
+      for (const name of ['sessions', 'archived_sessions']) {
+        const sub = path.join(root, '.codex', name);
+        if (fs.existsSync(sub) && !candidateRoots.includes(sub)) {
+          candidateRoots.push(sub);
+        }
       }
     }
 

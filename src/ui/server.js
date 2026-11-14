@@ -43,6 +43,7 @@ import { readAppIconPng } from '../discovery/app-icon.js';
 import { readWindowsAppIconPng } from '../discovery/windows-icon.js';
 import { buildMapLevel, levelArtifactIds, searchFiles } from '../graph/map-levels.js';
 import { sessionLeftoverIds } from '../graph/prompt-costs.js';
+import { measureSharedCaches } from '../graph/shared-caches.js';
 import { checkForUpdate, UPDATE_CHECK_INTERVAL_MS } from '../platform/update-check.js';
 import {
   findRunningAppBundle,
@@ -638,8 +639,15 @@ export function createAtlasServer(options = {}) {
 
   // The folder or file behind a mark of the map, a worktree or a project. Only places the scan
   // listed can be shown; the client never names a path here.
+  // Caches AI tools share, measured when the user asks; kept per service (sample or real home)
+  const sharedCachesByService = new WeakMap();
   const revealPathForId = (state, id) => {
     if (!state) return null;
+    const shared = /^shared-cache:(.+)$/.exec(id);
+    if (shared) {
+      const row = (sharedCachesByService.get(activeService())?.caches || []).find((c) => c.id === shared[1]);
+      return row ? row.path : null;
+    }
     const live = (state.artifacts || []).filter((a) => !a.quarantined);
     const art = live.find((a) => a.id === id);
     if (art) return art.canonicalPath;
@@ -1111,6 +1119,17 @@ export function createAtlasServer(options = {}) {
         return sendJson(res, 200, { ok: true, htmlPath, csvPath, shown: shown.ok });
       }
 
+      if (url.pathname === '/api/insights/shared-caches' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, shared: sharedCachesByService.get(activeService()) || null });
+      }
+      if (url.pathname === '/api/insights/shared-caches' && req.method === 'POST') {
+        const service = activeService();
+        const measured = await measureSharedCaches(service.platformServices);
+        const shared = { measuredAt: new Date(clock()).toISOString(), caches: measured.caches };
+        sharedCachesByService.set(service, shared);
+        return sendJson(res, 200, { ok: true, shared });
+      }
+
       if (url.pathname === '/api/insights/copies' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, copies: copiesStatus() });
       }
@@ -1225,7 +1244,23 @@ export function createAtlasServer(options = {}) {
       // move, with their deletion date
       if (url.pathname === '/api/cleanup/unused/prepare' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        return sendJson(res, 200, { ok: true, cleanup: activeService().prepareUnusedCleanup({ minDays: body.minDays, now: clock() }) });
+        return sendJson(res, 200, {
+          ok: true,
+          cleanup: activeService().prepareUnusedCleanup({ minDays: body.minDays, now: clock(), preview: Boolean(body.preview) })
+        });
+      }
+      // Suggested cleanups: folders of the app's own files left untouched, cleared in one step
+      if (url.pathname === '/api/cleanup/suggestions' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        return sendJson(res, 200, { ok: true, suggestions: activeService().cleanupSuggestions({ minDays: body.minDays, now: clock() }) });
+      }
+      if (url.pathname === '/api/cleanup/suggested/prepare' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter((id) => typeof id === 'string').slice(0, 100) : [];
+        return sendJson(res, 200, {
+          ok: true,
+          cleanup: activeService().prepareSuggestedCleanup({ groupIds, minDays: body.minDays, now: clock() })
+        });
       }
       if (url.pathname === '/api/cleanup/unused' && req.method === 'POST') {
         const body = await readJsonBody(req);

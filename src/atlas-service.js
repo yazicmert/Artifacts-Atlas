@@ -9,7 +9,20 @@ import { ArtifactIndexer } from './indexer/artifact-indexer.js';
 import { ProvenanceEngine } from './provenance/provenance-engine.js';
 import { ClassificationEngine } from './classification/classification-engine.js';
 import { GraphEngine } from './graph/graph-engine.js';
-import { CleanupEngine, PURGE_MIN_AGE_DAYS, SCHEDULED_DELETION_DAYS } from './cleanup/cleanup-engine.js';
+import {
+  CleanupEngine,
+  PURGE_MIN_AGE_DAYS,
+  SCHEDULED_DELETION_DAYS,
+  SCHEDULED_BY_UNUSED_CLEANUP,
+  SCHEDULED_BY_SUGGESTED_CLEANUP
+} from './cleanup/cleanup-engine.js';
+import {
+  SUGGESTION_DAY_CHOICES,
+  SUGGESTION_DEFAULT_DAYS,
+  suggestionCandidates,
+  groupSuggestions,
+  summarizeSuggestions
+} from './graph/cleanup-suggestions.js';
 
 /** How long a safe file must have gone unused to be offered by the unused-files cleanup. */
 export const UNUSED_DEFAULT_DAYS = 30;
@@ -36,7 +49,10 @@ export class ArtifactAtlasService {
   constructor(options = {}) {
     this.platformServices = new PlatformServices({
       homeDir: options.homeDir,
-      platform: options.platform
+      platform: options.platform,
+      env: options.env,
+      liveHome: options.liveHome,
+      tempBases: options.tempBases
     });
     this.adapterRegistry = new AdapterRegistry();
     this.applicationDiscovery = new ApplicationDiscovery({
@@ -538,18 +554,72 @@ export class ArtifactAtlasService {
       selectionSize
     });
     const blockedItems = [...(review.blockedItems || []), ...blocked];
+    // What the user is about to confirm: exactly these files, under these rules, for ten minutes
+    this.pendingCleanupReview = review.confirmationToken
+      ? {
+          token: review.confirmationToken,
+          eligibleIds: new Set(review.eligibleItems.map((i) => i.artifactId)),
+          allowHighRiskSingleOverride,
+          selectionSize,
+          preparedAt: Date.now()
+        }
+      : null;
     return { ...review, blockedItems, totalBlockedCount: blockedItems.length };
   }
 
-  executeQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false }) {
-    const { allowed: selected, selectionSize } = this.splitBySessionActivity(artifactIds);
-    const result = this.cleanupEngine.executeQuarantine({
-      selectionSize,
-      artifacts: selected,
-      authorizedRoots: this.activeState.authorizedRoots,
-      confirmationToken,
-      allowHighRiskSingleOverride
-    });
+  /**
+   * Moves the files of a confirmed review. With the review this window just showed, only the
+   * files it listed as eligible can move, and each is checked again now: a file that changed,
+   * vanished or whose session became active since the review stays where it is and is reported,
+   * while the others move. Any other token (such as the command line's, from another process)
+   * must match a fresh review of the whole selection.
+   */
+  executeQuarantine({ artifactIds = [], confirmationToken, allowHighRiskSingleOverride = false, now = Date.now() }) {
+    const pending = this.pendingCleanupReview;
+    const fromReview =
+      pending && confirmationToken && confirmationToken === pending.token && now - pending.preparedAt <= 10 * 60 * 1000;
+
+    let result;
+    if (fromReview) {
+      this.pendingCleanupReview = null;
+      const { allowed, blocked: running } = this.splitBySessionActivity(artifactIds);
+      const confirmed = allowed.filter((a) => pending.eligibleIds.has(a.id));
+      const recheck = this.cleanupEngine.prepareCleanupReview({
+        artifacts: confirmed,
+        authorizedRoots: this.activeState.authorizedRoots,
+        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride,
+        selectionSize: pending.selectionSize
+      });
+      const stillThere = new Set(this.activeState.artifacts.filter((a) => !a.quarantined).map((a) => a.id));
+      const dropped = [
+        ...recheck.blockedItems,
+        ...running.filter((b) => pending.eligibleIds.has(b.artifactId))
+      ];
+      const missing = [...pending.eligibleIds].filter((id) => !stillThere.has(id)).length;
+      if (!recheck.confirmationToken) {
+        result = { batchId: null, quarantinedEntries: [], blockedItems: dropped };
+      } else {
+        const eligible = new Set(recheck.eligibleItems.map((i) => i.artifactId));
+        const moved = this.cleanupEngine.executeQuarantine({
+          selectionSize: pending.selectionSize,
+          artifacts: confirmed.filter((a) => eligible.has(a.id)),
+          authorizedRoots: this.activeState.authorizedRoots,
+          confirmationToken: recheck.confirmationToken,
+          allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride
+        });
+        result = { ...moved, blockedItems: [...dropped, ...(moved.blockedItems || [])] };
+      }
+      result.leftSinceReview = result.blockedItems.length + missing;
+    } else {
+      const { allowed: selected, selectionSize } = this.splitBySessionActivity(artifactIds);
+      result = this.cleanupEngine.executeQuarantine({
+        selectionSize,
+        artifacts: selected,
+        authorizedRoots: this.activeState.authorizedRoots,
+        confirmationToken,
+        allowHighRiskSingleOverride
+      });
+    }
 
     // Refresh Knowledge Graph and Treemap after quarantining items
     this.rebuildActiveGraph();
@@ -625,7 +695,7 @@ export class ArtifactAtlasService {
    * rules a file out, never in). The confirmation is bound to this exact list and the date
    * they will be deleted.
    */
-  prepareUnusedCleanup({ minDays = UNUSED_DEFAULT_DAYS, now = Date.now() } = {}) {
+  prepareUnusedCleanup({ minDays = UNUSED_DEFAULT_DAYS, now = Date.now(), preview = false } = {}) {
     const days = UNUSED_DAY_CHOICES.includes(Number(minDays)) ? Number(minDays) : UNUSED_DEFAULT_DAYS;
     const cutoff = now - days * 86400000;
     const candidates = (this.activeState.artifacts || []).filter((a) => {
@@ -635,27 +705,76 @@ export class ArtifactAtlasService {
       const opened = Date.parse(a.accessedAt || '');
       return !(Number.isFinite(opened) && opened > cutoff);
     });
-    const purgeAt = new Date(now + SCHEDULED_DELETION_DAYS * 86400000).toISOString();
-    const ids = candidates.map((a) => a.id).sort();
-    const token = ids.length
-      ? `unused_${crypto.createHash('sha256').update(`${purgeAt}\n${ids.join('\n')}`).digest('hex').slice(0, 24)}`
-      : null;
-    this.pendingUnusedCleanup = token ? { token, ids, purgeAt, preparedAt: now } : null;
-    const byKind = new Map();
-    let bytes = 0;
-    for (const a of candidates) {
-      const k = byKind.get(a.artifactType) || { artifactType: a.artifactType, count: 0, bytes: 0 };
-      k.count += 1;
-      k.bytes += a.sizeBytes || 0;
-      byKind.set(a.artifactType, k);
-      bytes += a.sizeBytes || 0;
-    }
     return {
       minDays: days,
       dayChoices: UNUSED_DAY_CHOICES,
+      ...this.stageScheduledCleanup(candidates, { scheduledBy: SCHEDULED_BY_UNUSED_CLEANUP, now, preview })
+    };
+  }
+
+  /** Suggested cleanups for the Insights card: folders of the app's own files left untouched. */
+  cleanupSuggestions({ minDays = SUGGESTION_DEFAULT_DAYS, now = Date.now() } = {}) {
+    const days = SUGGESTION_DAY_CHOICES.includes(Number(minDays)) ? Number(minDays) : SUGGESTION_DEFAULT_DAYS;
+    return { ...summarizeSuggestions(this.activeState, { minDays: days, now }), deleteAfterDays: SCHEDULED_DELETION_DAYS };
+  }
+
+  /**
+   * The files of the suggested folders the user ticked, worked out again now. The confirmation
+   * is bound to this exact list and its deletion date, like the unused cleanup's.
+   */
+  prepareSuggestedCleanup({ groupIds = [], minDays = SUGGESTION_DEFAULT_DAYS, now = Date.now() } = {}) {
+    const days = SUGGESTION_DAY_CHOICES.includes(Number(minDays)) ? Number(minDays) : SUGGESTION_DEFAULT_DAYS;
+    const wanted = new Set(groupIds);
+    const groups = groupSuggestions(this.activeState, suggestionCandidates(this.activeState, { minDays: days, now })).filter((g) =>
+      wanted.has(g.id)
+    );
+    const ids = new Set(groups.flatMap((g) => g.artifactIds));
+    const candidates = this.activeState.artifacts.filter((a) => ids.has(a.id));
+    return {
+      minDays: days,
+      dayChoices: SUGGESTION_DAY_CHOICES,
+      folders: groups.map((g) => ({ id: g.id, folder: g.folder, topLevel: g.topLevel, count: g.count, bytes: g.bytes })),
+      reviewCount: candidates.filter((a) => a.cleanupClassification !== 'LOW').length,
+      ...this.stageScheduledCleanup(candidates, { scheduledBy: SCHEDULED_BY_SUGGESTED_CLEANUP, now })
+    };
+  }
+
+  /**
+   * The list, its deletion date and, unless only previewed, the one-use confirmation for it.
+   * A preview (the Insights card) never replaces a confirmation the user is looking at.
+   */
+  stageScheduledCleanup(candidates, { scheduledBy, now, preview = false }) {
+    const purgeAt = new Date(now + SCHEDULED_DELETION_DAYS * 86400000).toISOString();
+    const ids = candidates.map((a) => a.id).sort();
+    const token = ids.length
+      ? `${scheduledBy === SCHEDULED_BY_UNUSED_CLEANUP ? 'unused' : 'suggested'}_${crypto
+          .createHash('sha256')
+          .update(`${scheduledBy}\n${purgeAt}\n${ids.join('\n')}`)
+          .digest('hex')
+          .slice(0, 24)}`
+      : null;
+    if (!preview) {
+      this.pendingUnusedCleanup = token ? { token, ids, purgeAt, scheduledBy, preparedAt: now } : null;
+    }
+    const byKind = new Map();
+    let bytes = 0;
+    // A hardlinked file is one file on disk: its space is counted once
+    const seen = new Set();
+    for (const a of candidates) {
+      const key = a.physicalInodeKey || a.canonicalPath;
+      const size = seen.has(key) ? 0 : a.sizeBytes || 0;
+      seen.add(key);
+      const k = byKind.get(a.artifactType) || { artifactType: a.artifactType, count: 0, bytes: 0 };
+      k.count += 1;
+      k.bytes += size;
+      byKind.set(a.artifactType, k);
+      bytes += size;
+    }
+    return {
+      scheduledBy,
       deleteAfterDays: SCHEDULED_DELETION_DAYS,
       purgeAt,
-      token,
+      token: preview ? null : token,
       count: candidates.length,
       bytes,
       kinds: [...byKind.values()].sort((a, b) => b.bytes - a.bytes)
@@ -669,9 +788,10 @@ export class ArtifactAtlasService {
       throw new Error('CLEANUP_CONFIRMATION_EXPIRED: Open the list again and confirm.');
     }
     this.pendingUnusedCleanup = null;
-    const wanted = new Set(pending.ids);
-    const selected = this.activeState.artifacts.filter((a) => wanted.has(a.id) && !a.quarantined);
-    // The cleanup review still checks every file (running sessions, changed files, …)
+    // Files of a session that became active since stay where they are
+    const { allowed } = this.splitBySessionActivity(pending.ids);
+    const selected = allowed.filter((a) => !a.quarantined);
+    // The cleanup review still checks every file (changed files, places, …)
     const review = this.cleanupEngine.prepareCleanupReview({
       artifacts: selected,
       authorizedRoots: this.activeState.authorizedRoots,
@@ -683,7 +803,7 @@ export class ArtifactAtlasService {
         authorizedRoots: this.activeState.authorizedRoots,
         confirmationToken: review.confirmationToken,
         selectionSize: selected.length,
-        schedule: { purgeAt: pending.purgeAt }
+        schedule: { purgeAt: pending.purgeAt, scheduledBy: pending.scheduledBy || SCHEDULED_BY_UNUSED_CLEANUP }
       },
       { onProgress }
     );
@@ -692,8 +812,19 @@ export class ArtifactAtlasService {
       batchId: result.batchId,
       purgeAt: pending.purgeAt,
       movedCount: result.quarantinedEntries.length,
-      movedBytes: result.quarantinedEntries.reduce((s, e) => s + (e.sizeBytes || 0), 0),
-      blockedCount: result.blockedItems.length,
+      // Space on disk: a hardlinked file counts once
+      movedBytes: (() => {
+        const byId = new Map(selected.map((a) => [a.id, a]));
+        const seen = new Set();
+        let total = 0;
+        for (const e of result.quarantinedEntries) {
+          const key = byId.get(e.artifactId)?.physicalInodeKey || e.originalPath;
+          if (!seen.has(key)) total += e.sizeBytes || 0;
+          seen.add(key);
+        }
+        return total;
+      })(),
+      blockedCount: result.blockedItems.length + (pending.ids.length - selected.length),
       quarantineEntries: this.quarantineEntriesWithSessions()
     };
   }

@@ -17,7 +17,7 @@
 <link rel="icon" href="../../favicon.svg" type="image/svg+xml" />
 <link rel="icon" href="../../favicon-32.png" sizes="32x32" type="image/png" />
 <link rel="apple-touch-icon" href="../../apple-touch-icon.png" />
-<link rel="stylesheet" href="../../style.css?v=22" />
+<link rel="stylesheet" href="../../style.css?v=23" />
 </head>
 <body class="doc">
 <div class="topbar">
@@ -47,7 +47,8 @@
   <p>To show the leftovers of an application you drop, Artifact Atlas has to list the folders where that application keeps its data. Most of them are hidden: <code>~/Library</code> on macOS, <code>AppData</code> on Windows, and dot-folders such as <code>.claude</code>, <code>.cursor</code> or <code>.ollama</code> in your home folder.</p>
   <h2>What is read</h2>
   <ul>
-    <li>File and folder names, sizes, timestamps and permissions inside the dropped application's data folders.</li>
+    <li>File and folder names, sizes, timestamps and permissions inside the dropped application's data folders, including a folder you moved them to with <code>CLAUDE_CONFIG_DIR</code> or <code>CODEX_HOME</code>.</li>
+    <li>For Claude Code, its own folder in the system temp folder (<code>claude-&lt;user id&gt;</code>, which holds each session's command output and scratch files) and its <code>claude-code-*.diag.log</code> logs there. Nothing else in the temp folder is read.</li>
     <li>For Claude Code, Cursor and Codex: session IDs, timestamps, tool names and the file paths those tools wrote, so files can be linked to the session that created them.</li>
     <li>In the project folders those sessions worked in: the files their tool calls named. The rest of a project folder is counted only if you <a href="../project-folders/">include whole project folders</a>.</li>
     <li>When you open the sessions on the map or select an item: the first prompt of each session shown, read from the session's own record and used to label it on the map and in the details panel. It is not stored.</li>
@@ -58,7 +59,7 @@
     <li>It never uploads anything. The app uses the network only to check for and download its own updates, which sends nothing about your files.</li>
     <li>It never runs the application you drop.</li>
     <li>It never scans credential folders such as <code>~/.ssh</code>, <code>~/.aws</code> or Keychains.</li>
-    <li>Cleanup only moves files you confirm into a recoverable Quarantine Vault. A file is deleted for good only after it has waited there (7 days for unused leftovers, 30 days otherwise) and you confirm the list.</li>
+    <li>Cleanup only moves files you confirm into a recoverable Quarantine Vault. A file is deleted for good only after it has waited there (7 days for a cleanup you scheduled, 30 days otherwise) and you confirm the list.</li>
   </ul>
   <h2>How to grant it</h2>
   <ol>
@@ -84,7 +85,7 @@
   </div>
   <div class="footer-inner footer-base"><span>MIT licensed · Not affiliated with the makers of the apps it scans.</span></div>
 </footer>
-<script src="../../header.js?v=22" defer></script>
-<script src="../../motion.js?v=22" defer></script>
+<script src="../../header.js?v=23" defer></script>
+<script src="../../motion.js?v=23" defer></script>
 </body>
 </html>
