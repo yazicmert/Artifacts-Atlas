@@ -49,7 +49,10 @@ export class ArtifactAtlasService {
   constructor(options = {}) {
     this.platformServices = new PlatformServices({
       homeDir: options.homeDir,
-      platform: options.platform
+      platform: options.platform,
+      env: options.env,
+      liveHome: options.liveHome,
+      tempBases: options.tempBases
     });
     this.adapterRegistry = new AdapterRegistry();
     this.applicationDiscovery = new ApplicationDiscovery({

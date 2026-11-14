@@ -34,6 +34,7 @@
 7. **Never Scan the Real Home Folder Without Consent**:
    - The UI server serves sandbox sample data until the user grants the `home-folder-scan` consent; the consent is persisted and revocable. Probing permission status must never trigger a macOS prompt or read file contents.
    - Permissions are asked when a scan of a real application starts (the pre-scan questions in the Permissions window) and stay changeable there. What a scan counts is a permission too (`SCAN_SCOPE`: `project-folders`, `dependency-folders`); both are off until the user turns them on. A project folder is walked in full only with `project-folders`, and never when it is the home folder, a folder containing it, a drive root or a protected path. With `dependency-folders`, dependency and Git folders inside project folders are measured as a whole (`scan.bulkFolders`): counted and sized, never listed as artifacts, never selectable and never cleaned up. Without it they are not read.
+   - Besides an app's data folders (and a folder its own variable moved them to: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`), a scan of the live home (`PlatformServices.isLiveHome`: the real home of the running user, laid out like this system, never the sample or `--home`) reads Claude Code's own temp folder (`claude-<uid>`) and `claude-code-*.diag.log` files in the system temp folder (`src/discovery/claude-temp.js`): named like Claude Code's, not links, owned by the user. The temp folder itself is never walked.
    - The `leftovers` command (`src/cli.js`, run by the repo's agent skill) reads the real home folder only with `--read-home`, which an agent passes only after the user said yes in the chat. It never walks project or dependency folders.
    - Past the file limit, files are measured (`scan.overflow`) but not listed, so the total stays complete. They are totalled by folder (`scan.overflow.folders`, the walk root plus up to three folders) so the map can show where they are; they are never selectable. Listed bytes (`scan.totalPhysicalBytes`) and measured bytes (`scan.measuredPhysicalBytes`) are kept apart; a hardlinked file is counted once across both.
 
@@ -49,6 +50,7 @@
 - `src/` — Portable Core & Local Desktop Application (Node.js 24 ESM + built-in `node:sqlite`):
   - `src/models/` — Versioned domain models and enumerations.
   - `src/platform/` — `PlatformServices` (filesystem boundary guards, symlink checks, inode identity, Finder / File Explorer reveal, macOS Library and Windows AppData locations). `platform` names the layout of the home folder being read (`darwin` or `win32`); the sample home is always laid out like a Mac's.
+  - `src/discovery/claude-temp.js` — Claude Code's folder and logs in the system temp folder (see rule 7).
   - `src/platform/path-keys.js` — `/`-separated keys for Windows paths, used only for matching and folder grouping. Never pass a key to the filesystem.
   - `src/discovery/windows-apps.js` — Windows applications: Start Menu shortcuts by name and the shortcut's stored target, and Store apps by their `Packages` folder name.
   - `src/discovery/windows-icon.js` — A program's icon, read from the resources of its `.exe` (PE file); static read only.

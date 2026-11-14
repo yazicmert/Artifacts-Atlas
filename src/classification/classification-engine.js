@@ -235,7 +235,9 @@ export class ClassificationEngine {
 
   classifyByContextRules(artifact) {
     // Matched as a '/'-separated key so the same rules read Windows paths
-    const canonical = toPathKey(artifact.canonicalPath);
+    // A file in a moved Claude Code or Codex folder is read as if it were in ~/.claude or ~/.codex
+    const logical = this.platformServices?.logicalPath ? this.platformServices.logicalPath(artifact.canonicalPath) : artifact.canonicalPath;
+    const canonical = toPathKey(logical);
     const lowerPath = canonical.toLowerCase();
     const fileName = artifact.name;
     const lowerName = fileName.toLowerCase();
@@ -280,12 +282,22 @@ export class ClassificationEngine {
     const isSessionDir =
       lowerPath.includes('/.claude/projects/') ||
       lowerPath.includes('/.codex/sessions/') ||
+      lowerPath.includes('/.codex/archived_sessions/') ||
       lowerPath.includes('/workspacestorage/') ||
       lowerName === 'composerdata.json' ||
       lowerName.includes('chat.history');
 
+    // Records an app keeps of its conversations, read by where they are, never by their text:
+    // Codex's thread database and prompt history, Cursor's chat databases and agent transcripts
+    const isSessionStore =
+      (lowerPath.includes('/.codex/') && (/^state(_\d+)?\.sqlite(-wal|-shm)?$/.test(lowerName) || lowerName === 'history.jsonl')) ||
+      (lowerPath.includes('/.cursor/projects/') && lowerPath.includes('/agent-transcripts/')) ||
+      ((lowerPath.includes('/cursor/user/globalstorage/') || lowerPath.includes('/cursor/user/workspacestorage/')) &&
+        /^state\.vscdb(\.backup)?(-wal|-shm)?$/.test(lowerName));
+
     if (
       (isSessionDir && (ext === '.jsonl' || lowerName === 'composerdata.json')) ||
+      isSessionStore ||
       artifact.evidence.some((e) => e.ruleId === 'provenance.verified.session_transcript')
     ) {
       return {

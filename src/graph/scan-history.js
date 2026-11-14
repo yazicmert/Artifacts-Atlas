@@ -13,7 +13,10 @@
 
 export const MAX_SESSIONS_KEPT = 200;
 
-const scopeKey = (scope = {}) => `${scope.projectFolders ? 'P' : '-'}${scope.dependencyFolders ? 'D' : '-'}`;
+// Bumped when a scan of the same app starts reading more places (2: the temp folder, the CLI
+// cache, moved app folders, archived Codex sessions), so new places are never shown as growth
+const LOCATIONS_VERSION = 2;
+const scopeKey = (scope = {}) => `${scope.projectFolders ? 'P' : '-'}${scope.dependencyFolders ? 'D' : '-'}@${LOCATIONS_VERSION}`;
 
 export function summarizeScanForHistory(state) {
   const scan = state.scan || {};

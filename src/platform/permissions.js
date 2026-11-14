@@ -28,7 +28,7 @@ const DEFINITIONS = [
     kind: 'IN_APP_CONSENT',
     required: true,
     summary:
-      'Lets Artifact Atlas read file names, sizes and timestamps in the data folders of the application you drop, including hidden folders such as ~/.claude and ~/Library. Without it the app only shows built-in sample data.',
+      'Lets Artifact Atlas read file names, sizes and timestamps in the data folders of the application you drop, including hidden folders such as ~/.claude and ~/Library, and for Claude Code its own folder and logs in the system temp folder. Without it the app only shows built-in sample data.',
     docsPath: '/permissions/home-folder-scan/',
     settingsUrl: null
   },
@@ -100,7 +100,7 @@ export function normalizeScanScope(raw) {
 
 const WINDOWS_SUMMARIES = {
   'home-folder-scan':
-    'Lets Artifact Atlas read file names, sizes and timestamps in the data folders of the application you choose, including AppData and hidden folders such as .claude in your user folder. Without it the app only shows built-in sample data.'
+    'Lets Artifact Atlas read file names, sizes and timestamps in the data folders of the application you choose, including AppData and hidden folders such as .claude in your user folder, and for Claude Code its own folder in the temp folder. Without it the app only shows built-in sample data.'
 };
 
 export function listPermissionDefinitions(platform = null) {

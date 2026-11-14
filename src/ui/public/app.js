@@ -2490,7 +2490,7 @@ async function revealById(targetId, label) {
 
 const GROWTH_REASONS = {
   FIRST_SCAN: 'This is the first scan of this app. The next one will show what changed.',
-  DIFFERENT_SCOPE: 'The last scan counted different folders (see Permissions), so the totals are not comparable.',
+  DIFFERENT_SCOPE: 'The last scan counted different folders (a permission changed, or this version reads more places), so the totals are not comparable.',
   CANCELLED: 'This scan was stopped before the end.',
   OTHER_APPLICATION: 'The last scan was of another app.'
 };
