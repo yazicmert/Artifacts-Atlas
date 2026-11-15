@@ -646,7 +646,8 @@ export class ArtifactAtlasService {
         artifacts: confirmed.filter((a) => eligible.has(a.id)),
         authorizedRoots: this.activeState.authorizedRoots,
         confirmationToken: recheck.confirmationToken,
-        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride
+        allowHighRiskSingleOverride: pending.allowHighRiskSingleOverride,
+        reviewed: { ...recheck, blockedItems: [] }
       },
       dropped,
       missing

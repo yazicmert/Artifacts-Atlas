@@ -90,6 +90,8 @@ async function runServe() {
   const gracefulExit = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Never more than a second: the window is already gone
+    setTimeout(() => process.exit(0), 1000).unref();
     await shutdown();
     process.exit(0);
   };

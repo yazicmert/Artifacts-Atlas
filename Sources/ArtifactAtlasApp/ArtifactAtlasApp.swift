@@ -20,6 +20,10 @@ final class AtlasAppDelegate: NSObject, NSApplicationDelegate {
     let backendManager = BackendProcessManager()
 
     func applicationWillTerminate(_ notification: Notification) {
+        // The windows go first, so quitting looks instant while the backend stops behind them
+        for window in NSApp.windows {
+            window.orderOut(nil)
+        }
         backendManager.stop()
     }
 

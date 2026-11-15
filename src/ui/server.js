@@ -1512,6 +1512,9 @@ export function createAtlasServer(options = {}) {
         }
         resolve();
       });
+      // The window's open connections (a request in flight, a kept-alive socket) must not hold
+      // the app open while it quits
+      server.closeAllConnections?.();
     });
   };
 

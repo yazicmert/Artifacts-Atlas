@@ -200,7 +200,8 @@ public final class BackendProcessManager {
 
         if let proc = process, proc.isRunning {
             proc.terminate()
-            let deadline = Date().addingTimeInterval(2.0)
+            // The backend stops within a second (it bounds its own shutdown); never wait longer
+            let deadline = Date().addingTimeInterval(1.2)
             while proc.isRunning && Date() < deadline {
                 Thread.sleep(forTimeInterval: 0.05)
             }

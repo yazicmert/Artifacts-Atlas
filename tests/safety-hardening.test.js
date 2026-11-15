@@ -334,7 +334,8 @@ test('S5. Quarantine is crash-safe: manifest precedes the move, a failed move le
     assert.equal(lowRiskCache.quarantined, false);
     assert.equal(service.sqliteStore.listQuarantineEntries().length, 0);
     const failedBatchDir = path.dirname(failed.batchManifestPath);
-    assert.deepEqual(fs.readdirSync(failedBatchDir), ['batch-manifest.json']);
+    // No entry folder is left behind; the group's journal (written before any move) stays
+    assert.deepEqual(fs.readdirSync(failedBatchDir).filter((n) => !/^journal-\d+\.json$/.test(n)), ['batch-manifest.json']);
 
     // (c) Cross-volume (EXDEV) quarantine + restore: copy is verified before the source is removed
     const exdev = () => {
@@ -878,11 +879,21 @@ test('S14. Quitting mid-move: the move stops at a file, every moved file is list
     const reopened = new ArtifactAtlasService(opts);
     openServices.push(reopened);
     assert.equal(reopened.sqliteStore.listQuarantineEntries('QUARANTINED').length, listed - 100);
-    assert.equal(reopened.cleanupEngine.reconcileManifests(), 100);
-    assert.equal(reopened.sqliteStore.listQuarantineEntries('QUARANTINED').length, listed);
+    // A manifest that never reached the disk is taken from its group's journal
+    const lost = reopened.sqliteStore.listQuarantineEntries('QUARANTINED')[0];
+    fs.writeFileSync(lost.manifestPath, '');
+    const db2 = new DatabaseSync(opts.dbPath);
+    db2.prepare('DELETE FROM quarantine_entries WHERE id = ?').run(lost.id);
+    db2.close();
+    const reopened2 = new ArtifactAtlasService(opts);
+    openServices.push(reopened2);
+    assert.equal(reopened2.cleanupEngine.reconcileManifests(), 101);
+    assert.equal(JSON.parse(fs.readFileSync(lost.manifestPath, 'utf8')).id, lost.id);
+    assert.equal(reopened.cleanupEngine.reconcileManifests(), 0);
+    assert.equal(reopened2.sqliteStore.listQuarantineEntries('QUARANTINED').length, listed);
     // And they can be put back
-    const back = reopened.sqliteStore.listQuarantineEntries('QUARANTINED')[0];
-    const r = reopened.restoreQuarantineEntry({ entryId: back.id, conflictStrategy: 'FAIL_IF_EXISTS' });
+    const back = reopened2.sqliteStore.listQuarantineEntries('QUARANTINED').find((e) => e.id === lost.id);
+    const r = reopened2.restoreQuarantineEntry({ entryId: back.id, conflictStrategy: 'FAIL_IF_EXISTS' });
     assert.ok(fs.existsSync(r.restoredToPath));
   } finally {
     sandbox.cleanup();

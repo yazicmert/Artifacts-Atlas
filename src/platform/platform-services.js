@@ -159,6 +159,41 @@ export class PlatformServices {
   }
 
   /**
+   * realpath of an authorized root or an ancestor folder, remembered for two seconds: a cleanup
+   * of tens of thousands of files asks the same few folders for every file. Files themselves
+   * are always resolved afresh.
+   */
+  memoRealPath(p) {
+    const now = Date.now();
+    if (!this.realMemo || now - this.realMemoAt > 2000) {
+      this.realMemo = new Map();
+      this.linkMemo = new Map();
+      this.realMemoAt = now;
+    }
+    let real = this.realMemo.get(p);
+    if (real === undefined) {
+      real = this.resolveRealPathSafe(p);
+      this.realMemo.set(p, real);
+    }
+    return real;
+  }
+
+  /** Whether a folder is a link (or unreadable), remembered like memoRealPath. */
+  memoIsLinkOrMissing(dir) {
+    this.memoRealPath(dir);
+    let v = this.linkMemo.get(dir);
+    if (v === undefined) {
+      try {
+        v = fs.lstatSync(dir).isSymbolicLink();
+      } catch {
+        v = true;
+      }
+      this.linkMemo.set(dir, v);
+    }
+    return v;
+  }
+
+  /**
    * Resolves canonical path safely without throwing when path doesn't exist.
    */
   resolveRealPathSafe(targetPath) {
@@ -177,7 +212,7 @@ export class PlatformServices {
     const realCandidate = this.resolveRealPathSafe(candidatePath);
     for (const root of authorizedRoots) {
       const normalizedRoot = path.resolve(root);
-      const realRoot = this.resolveRealPathSafe(root);
+      const realRoot = this.memoRealPath(normalizedRoot);
       if (
         normalizedCandidate === normalizedRoot ||
         normalizedCandidate.startsWith(normalizedRoot + path.sep) ||
@@ -368,7 +403,7 @@ export class PlatformServices {
     const matchingRoot = authorizedRoots
       .map((r) => path.resolve(r))
       .find((r) => {
-        const realRoot = this.resolveRealPathSafe(r);
+        const realRoot = this.memoRealPath(r);
         return (
           absTarget === r ||
           absTarget.startsWith(r + path.sep) ||
@@ -381,7 +416,7 @@ export class PlatformServices {
       return false;
     }
 
-    const effectiveRoot = this.resolveRealPathSafe(matchingRoot);
+    const effectiveRoot = this.memoRealPath(matchingRoot);
     const effectiveTarget = absTarget.startsWith(effectiveRoot + path.sep) ? absTarget : realTarget;
     const rel = path.relative(effectiveRoot, effectiveTarget);
     if (!rel || rel.startsWith('..')) {
@@ -392,12 +427,7 @@ export class PlatformServices {
     let current = effectiveRoot;
     for (let i = 0; i < parts.length - 1; i++) {
       current = path.join(current, parts[i]);
-      try {
-        const st = fs.lstatSync(current);
-        if (st.isSymbolicLink()) {
-          return true;
-        }
-      } catch {
+      if (this.memoIsLinkOrMissing(current)) {
         return true;
       }
     }
