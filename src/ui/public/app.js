@@ -1029,10 +1029,13 @@ async function executeScan({ bundlePath, workspacePath }) {
   pollProgress();
 
   try {
+    uiState.scanCancelled = false;
     const res = await apiRequest('/api/scan/start', 'POST', {
       bundlePath,
       workspacePaths: workspacePath ? [workspacePath] : []
     });
+    // Cancelled just as it finished: the window has already gone back
+    if (uiState.scanCancelled) return;
 
     uiState.activeState = res.state;
     uiState.quarantineEntries = res.quarantineEntries || [];
@@ -1050,12 +1053,24 @@ async function executeScan({ bundlePath, workspacePath }) {
 
     transitionToExplorerView();
   } catch (err) {
-    document.getElementById('scanning-view').classList.add('hidden');
-    document.getElementById('empty-workspace-view').classList.remove('hidden');
-    showToast(`Scan failed: ${err.message}`);
+    leaveScanningView();
+    if (!/SCAN_CANCELLED/.test(err.message || '') && !uiState.scanCancelled) {
+      showToast(`Scan failed: ${err.message}`);
+    }
   } finally {
     pollingProgress = false;
+    uiState.scanCancelled = false;
     scanViz.stop();
+  }
+}
+
+/* Back to what was on screen before the scan: the last scan's map, or the start. */
+function leaveScanningView() {
+  document.getElementById('scanning-view').classList.add('hidden');
+  if (uiState.activeState?.scan) {
+    document.getElementById('explorer-view').classList.remove('hidden');
+  } else {
+    document.getElementById('empty-workspace-view').classList.remove('hidden');
   }
 }
 
@@ -3283,8 +3298,15 @@ function bindExplorerControls() {
   });
 
   document.getElementById('cancel-scan-btn').addEventListener('click', async () => {
-    await apiRequest('/api/scan/cancel', 'POST');
-    showToast('Scan canceled.');
+    // The window goes back at once; the scan stops at its next step and keeps nothing
+    uiState.scanCancelled = true;
+    leaveScanningView();
+    showToast('Scan cancelled.');
+    try {
+      await apiRequest('/api/scan/cancel', 'POST');
+    } catch {
+      // The scan request reports how it ended
+    }
   });
 }
 

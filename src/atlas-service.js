@@ -113,8 +113,13 @@ export class ArtifactAtlasService {
   async scanAndAnalyze(params = {}) {
     this.lastProgress = null;
     this.scanInProgress = true;
+    // A cancelled scan leaves the app as it was, including which application it showed
+    const shownApplication = this.activeState.application;
     try {
       return await this.runScanAndAnalyze(params);
+    } catch (err) {
+      if (err.message === 'SCAN_CANCELLED') this.activeState.application = shownApplication;
+      throw err;
     } finally {
       this.scanInProgress = false;
     }
@@ -260,7 +265,10 @@ export class ArtifactAtlasService {
     const enterPhase = async (phase) => {
       this.lastProgress = { ...(this.lastProgress || {}), phase };
       await new Promise((resolve) => setImmediate(resolve));
+      // Cancelled: stop here and keep what was shown before; a half scan is never analysed
+      if (signal.aborted) throw new Error('SCAN_CANCELLED');
     };
+    if (signal.aborted) throw new Error('SCAN_CANCELLED');
     await enterPhase('analyzing');
 
     // Index raw entries into canonical Artifact models
@@ -300,7 +308,7 @@ export class ArtifactAtlasService {
 
     await enterPhase('saving');
 
-    // Persist snapshot in SQLite
+    // Persist snapshot in SQLite (the per-file index follows in the background, below)
     this.sqliteStore.saveSnapshot({
       application,
       workspaces,
@@ -331,6 +339,12 @@ export class ArtifactAtlasService {
       authorizedRoots,
       isDemoEnvironment: this.activeState.isDemoEnvironment
     };
+
+    // The file index is written after the result is shown, in pieces; a newer scan stops it
+    const indexToken = (this.indexToken = (this.indexToken || 0) + 1);
+    this.indexWrite = this.sqliteStore
+      .saveArtifactIndex(scan.applicationId, classificationResult.artifacts, { isCurrent: () => this.indexToken === indexToken })
+      .catch(() => false);
 
     // What each session left behind (numbers only)
     this.activeState.promptCosts = computePromptCosts(this.activeState);

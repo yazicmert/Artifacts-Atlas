@@ -228,8 +228,8 @@ export class PlatformServices {
       }
     }
 
-    for (const rel of HOME_PROTECTED_RELATIVES) {
-      const fullProtected = path.join(this.homeDir, rel);
+    if (!this.homeProtectedPaths) this.homeProtectedPaths = HOME_PROTECTED_RELATIVES.map((rel) => path.join(this.homeDir, rel));
+    for (const fullProtected of this.homeProtectedPaths) {
       if (resolved === fullProtected || resolved.startsWith(fullProtected + path.sep)) {
         return true;
       }
@@ -320,6 +320,40 @@ export class PlatformServices {
       lstat,
       absPath,
       canonicalPath: this.resolveRealPathSafe(absPath),
+      physicalInodeKey: `${lstat.dev}:${lstat.ino}`,
+      hardlinkCount: Number(lstat.nlink || 1)
+    };
+  }
+
+  /**
+   * The same check for an entry of a folder the walk already inspected: the folder is a real
+   * path inside the authorized roots, so a child that is not a link is inside them too and its
+   * real path is the folder's joined with its name. Saves two realpath calls and a boundary
+   * check per file. Links and protected places go through inspectEntry as before.
+   */
+  inspectChild(parentRealPath, name, authorizedRoots = []) {
+    const childPath = path.join(parentRealPath, name);
+    if (this.isProtectedSystemPath(childPath)) {
+      return { allowed: false, reason: 'PROTECTED_SYSTEM_PATH', absPath: childPath };
+    }
+    let lstat;
+    try {
+      lstat = fs.lstatSync(childPath);
+    } catch (err) {
+      return {
+        allowed: false,
+        reason: err.code === 'EACCES' || err.code === 'EPERM' ? 'PERMISSION_DENIED' : 'NOT_FOUND',
+        errorCode: err.code || 'UNKNOWN',
+        absPath: childPath
+      };
+    }
+    if (lstat.isSymbolicLink()) return this.inspectEntry(childPath, authorizedRoots);
+    return {
+      allowed: true,
+      isSymlink: false,
+      lstat,
+      absPath: childPath,
+      canonicalPath: childPath,
       physicalInodeKey: `${lstat.dev}:${lstat.ino}`,
       hardlinkCount: Number(lstat.nlink || 1)
     };
