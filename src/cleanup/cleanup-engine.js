@@ -348,12 +348,12 @@ export class CleanupEngine {
     const steps = this.quarantineSteps(begun);
     let step = steps.next();
     let n = 0;
+    // Each step is a group of files (VAULT_GROUP_SIZE): report and let the app answer after each
+    void batchSize;
     while (!step.done) {
-      if (++n % batchSize === 0) {
-        onProgress(step.value);
-        await new Promise((resolve) => setImmediate(resolve));
-
-      }
+      n += 1;
+      onProgress(step.value);
+      await new Promise((resolve) => setImmediate(resolve));
       step = steps.next();
     }
     return step.value;
@@ -366,14 +366,20 @@ export class CleanupEngine {
     confirmationToken = null,
     allowHighRiskSingleOverride = false,
     selectionSize = null,
-    schedule = null
+    schedule = null,
+    reviewed = null
   }) {
-    const review = this.prepareCleanupReview({
-      artifacts,
-      authorizedRoots,
-      allowHighRiskSingleOverride,
-      selectionSize
-    });
+    // A review the caller worked out a moment ago for exactly these files is not repeated;
+    // every file is still checked again right before it moves
+    const review =
+      reviewed && reviewed.confirmationToken && reviewed.eligibleItems.length === artifacts.length
+        ? reviewed
+        : this.prepareCleanupReview({
+            artifacts,
+            authorizedRoots,
+            allowHighRiskSingleOverride,
+            selectionSize
+          });
 
     if (!review.confirmationToken || confirmationToken !== review.confirmationToken) {
       throw new Error(
@@ -408,74 +414,98 @@ export class CleanupEngine {
 
     let stopped = false;
     try {
-      for (const item of review.eligibleItems) {
+      // Files move in groups. For each group the manifests are written first, then one journal
+      // holding all of them is forced to disk, and only then do the files move: a crash leaves
+      // every moved file with its record on disk (reconcileManifests reads the journal), at one
+      // forced write per group instead of one per file.
+      const items = review.eligibleItems;
+      for (let start = 0; start < items.length; start += VAULT_GROUP_SIZE) {
         if (shouldStop?.()) {
           stopped = true;
           break;
         }
-        done += 1;
-        const artifact = artifactById.get(item.artifactId);
-        // Only the risks this kind of cleanup allows may be scheduled for deletion
-        if (schedule && !scheduleAllows(scheduledBy, artifact.cleanupClassification)) {
-          runtimeBlocked.push({
-            artifactId: artifact.id,
-            name: artifact.name,
-            canonicalPath: artifact.canonicalPath,
-            code: 'NOT_SAFE_FOR_SCHEDULED_DELETION',
-            reasons: ['This file is not one that can be deleted on a schedule.']
-          });
-          yield { done, total };
-          continue;
-        }
-        // Re-run preflight right before atomic move (TOCTOU guard)
-        const finalCheck = this.verifyArtifactPreFlight(artifact, authorizedRoots);
-        if (!finalCheck.valid) {
-          runtimeBlocked.push({
-            artifactId: artifact.id,
-            name: artifact.name,
-            canonicalPath: artifact.canonicalPath,
-            code: finalCheck.code,
-            reasons: finalCheck.issues
-          });
-          yield { done, total };
-          continue;
-        }
-
-        try {
-          const entryModel = this.moveIntoVault({
-            batchId,
-            batchDir,
-            sourcePath: artifact.canonicalPath,
-            deferSave: true,
-            fields: {
+        const planned = [];
+        for (const item of items.slice(start, start + VAULT_GROUP_SIZE)) {
+          done += 1;
+          const artifact = artifactById.get(item.artifactId);
+          // Only the risks this kind of cleanup allows may be scheduled for deletion
+          if (schedule && !scheduleAllows(scheduledBy, artifact.cleanupClassification)) {
+            runtimeBlocked.push({
               artifactId: artifact.id,
-              artifactName: artifact.name,
-              sizeBytes: artifact.sizeBytes,
-              originalMode: artifact.mode,
-              originalMtimeMs: artifact.mtimeMs,
-              originalInodeKey: artifact.physicalInodeKey,
-              riskCategory: artifact.cleanupClassification,
-              artifactType: artifact.artifactType,
-              provenanceConfidence: artifact.provenanceConfidence,
-              // The sessions it belonged to (IDs only), so Quarantine can name them later
-              sessionIds: artifact.sessionIds || [],
-              reason: artifact.cleanupExplanation,
-              ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy } : {})
-            }
-          });
-          artifact.quarantined = true;
-          quarantinedEntries.push(entryModel);
-          unsaved.push(entryModel);
-          if (unsaved.length >= 500) save();
-        } catch (err) {
-          // A file another program holds open (Windows) or that changed is left where it is
-          runtimeBlocked.push({
-            artifactId: artifact.id,
-            name: artifact.name,
-            canonicalPath: artifact.canonicalPath,
-            code: 'QUARANTINE_MOVE_FAILED',
-            reasons: [`File was left in place; move into quarantine failed (${err.code || err.message}).`]
-          });
+              name: artifact.name,
+              canonicalPath: artifact.canonicalPath,
+              code: 'NOT_SAFE_FOR_SCHEDULED_DELETION',
+              reasons: ['This file is not one that can be deleted on a schedule.']
+            });
+            continue;
+          }
+          // Re-run preflight right before the move (TOCTOU guard)
+          const finalCheck = this.verifyArtifactPreFlight(artifact, authorizedRoots);
+          if (!finalCheck.valid) {
+            runtimeBlocked.push({
+              artifactId: artifact.id,
+              name: artifact.name,
+              canonicalPath: artifact.canonicalPath,
+              code: finalCheck.code,
+              reasons: finalCheck.issues
+            });
+            continue;
+          }
+          try {
+            const entryModel = this.prepareVaultEntry({
+              batchId,
+              batchDir,
+              sourcePath: artifact.canonicalPath,
+              fields: {
+                artifactId: artifact.id,
+                artifactName: artifact.name,
+                sizeBytes: artifact.sizeBytes,
+                originalMode: artifact.mode,
+                originalMtimeMs: artifact.mtimeMs,
+                originalInodeKey: artifact.physicalInodeKey,
+                riskCategory: artifact.cleanupClassification,
+                artifactType: artifact.artifactType,
+                provenanceConfidence: artifact.provenanceConfidence,
+                // The sessions it belonged to (IDs only), so Quarantine can name them later
+                sessionIds: artifact.sessionIds || [],
+                reason: artifact.cleanupExplanation,
+                ...(schedule ? { autoPurgeAt: schedule.purgeAt, scheduledBy } : {})
+              }
+            });
+            planned.push({ artifact, entryModel });
+          } catch (err) {
+            runtimeBlocked.push({
+              artifactId: artifact.id,
+              name: artifact.name,
+              canonicalPath: artifact.canonicalPath,
+              code: 'QUARANTINE_MOVE_FAILED',
+              reasons: [`File was left in place; move into quarantine failed (${err.code || err.message}).`]
+            });
+          }
+        }
+        if (planned.length > 0) {
+          writeFileDurable(
+            path.join(batchDir, `journal-${String(start).padStart(9, '0')}.json`),
+            JSON.stringify(planned.map((p) => p.entryModel))
+          );
+        }
+        for (const { artifact, entryModel } of planned) {
+          try {
+            this.commitVaultEntry(entryModel);
+            artifact.quarantined = true;
+            quarantinedEntries.push(entryModel);
+            unsaved.push(entryModel);
+            if (unsaved.length >= 500) save();
+          } catch (err) {
+            // A file another program holds open (Windows) or that changed is left where it is
+            runtimeBlocked.push({
+              artifactId: artifact.id,
+              name: artifact.name,
+              canonicalPath: artifact.canonicalPath,
+              code: 'QUARANTINE_MOVE_FAILED',
+              reasons: [`File was left in place; move into quarantine failed (${err.code || err.message}).`]
+            });
+          }
         }
         yield { done, total };
       }
@@ -514,6 +544,51 @@ export class CleanupEngine {
    * A payload therefore never exists in the vault without its recovery descriptor. If the move
    * fails the source is untouched and the empty entry directory is removed.
    */
+  /**
+   * Gets one file ready to move: its entry folder, digest and PENDING manifest (not yet forced
+   * to disk; the caller writes a durable journal for a group of them before any moves).
+   */
+  prepareVaultEntry({ batchId, batchDir, sourcePath, fields }) {
+    const entryId = stableId('qent', `${batchId}:${sourcePath}`);
+    const entryDir = path.join(batchDir, entryId);
+    fs.mkdirSync(entryDir, { recursive: true });
+    const payloadPath = path.join(entryDir, 'payload');
+    const manifestPath = path.join(entryDir, 'manifest.json');
+    try {
+      const sha256 = this.platformServices.computeFileSha256(sourcePath);
+      const entryModel = createQuarantineEntryModel({
+        ...fields,
+        id: entryId,
+        batchId,
+        originalPath: sourcePath,
+        quarantinePath: payloadPath,
+        manifestPath,
+        sha256,
+        status: 'PENDING'
+      });
+      fs.writeFileSync(manifestPath, JSON.stringify(entryModel, null, 2));
+      return entryModel;
+    } catch (err) {
+      fs.rmSync(entryDir, { recursive: true, force: true });
+      throw err;
+    }
+  }
+
+  /** Moves a prepared file into its entry folder and marks its manifest QUARANTINED. */
+  commitVaultEntry(entryModel) {
+    try {
+      this.platformServices.moveFileNoClobber(entryModel.originalPath, entryModel.quarantinePath, entryModel.sha256);
+    } catch (err) {
+      if (!this.platformServices.entryExists(entryModel.quarantinePath)) {
+        fs.rmSync(path.dirname(entryModel.quarantinePath), { recursive: true, force: true });
+      }
+      throw err;
+    }
+    entryModel.status = 'QUARANTINED';
+    fs.writeFileSync(entryModel.manifestPath, JSON.stringify(entryModel, null, 2));
+    return entryModel;
+  }
+
   moveIntoVault({ batchId, batchDir, sourcePath, fields, deferSave = false }) {
     const entryId = stableId('qent', `${batchId}:${sourcePath}`);
     const entryDir = path.join(batchDir, entryId);
@@ -587,9 +662,18 @@ export class CleanupEngine {
         try {
           manifest = JSON.parse(fs.readFileSync(path.join(entryDir, 'manifest.json'), 'utf8'));
         } catch {
-          continue;
+          // The manifest did not reach the disk: the group's journal, forced to disk before
+          // any of its files moved, holds it; the manifest is written again from it
+          manifest = journalEntry(path.join(batchesDir, batchName), entryId);
+          if (manifest) {
+            try {
+              fs.writeFileSync(path.join(entryDir, 'manifest.json'), JSON.stringify({ ...manifest, status: 'QUARANTINED' }, null, 2));
+            } catch {
+              // The record below still lists it
+            }
+          }
         }
-        if (manifest.id !== entryId || !manifest.originalPath) continue;
+        if (!manifest || manifest.id !== entryId || !manifest.originalPath) continue;
         missing.push(
           createQuarantineEntryModel({
             ...manifest,
@@ -994,6 +1078,9 @@ export const PURGE_MIN_AGE_DAYS = 30;
 
 /** Unused safe files moved by the cleanup the user confirmed are deleted after this many days. */
 export const SCHEDULED_DELETION_DAYS = 7;
+/** How many files move between two forced writes of the vault's journal. */
+export const VAULT_GROUP_SIZE = 64;
+
 export const SCHEDULED_BY_UNUSED_CLEANUP = 'unused-cleanup';
 export const SCHEDULED_BY_SUGGESTED_CLEANUP = 'suggested-cleanup';
 
@@ -1013,6 +1100,31 @@ function scheduleAllows(scheduledBy, risk) {
 /**
  * Writes a file and fsyncs it so the recovery descriptor survives a crash right after the move.
  */
+const journalCache = new Map();
+/** One entry of a batch's journals (see quarantineSteps), or null. */
+function journalEntry(batchDir, entryId) {
+  let entries = journalCache.get(batchDir);
+  if (!entries) {
+    entries = new Map();
+    let names = [];
+    try {
+      names = fs.readdirSync(batchDir).filter((n) => /^journal-\d+\.json$/.test(n));
+    } catch {
+      // No journals
+    }
+    for (const name of names) {
+      try {
+        for (const e of JSON.parse(fs.readFileSync(path.join(batchDir, name), 'utf8'))) entries.set(e.id, e);
+      } catch {
+        // A journal cut off while being written belongs to files that never moved
+      }
+    }
+    journalCache.set(batchDir, entries);
+    if (journalCache.size > 50) journalCache.delete(journalCache.keys().next().value);
+  }
+  return entries.get(entryId) || null;
+}
+
 function writeFileDurable(filePath, contents) {
   const fd = fs.openSync(filePath, 'w');
   try {

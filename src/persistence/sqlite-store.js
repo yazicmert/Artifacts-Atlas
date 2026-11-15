@@ -241,6 +241,18 @@ const MIGRATIONS = [
       ALTER TABLE quarantine_entries ADD COLUMN scheduled_by TEXT;
       ALTER TABLE quarantine_entries ADD COLUMN needed_again_at TEXT;
     `
+  },
+  {
+    // Evidence, provenance edges and cleanup recommendations are kept in memory for the scan
+    // shown; nothing reads them back, and writing one row per file to each made a large scan
+    // slow. Their old rows are dropped. The file index (artifacts) stays.
+    version: 8,
+    name: '008_drop_per_file_derived_rows',
+    sql: `
+      DELETE FROM evidence;
+      DELETE FROM provenance_edges;
+      DELETE FROM cleanup_recommendations;
+    `
   }
 ];
 
@@ -291,6 +303,10 @@ export class SQLiteStore {
     }
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA journal_mode = WAL;');
+    // With WAL, NORMAL keeps the database consistent after a crash; only the last commit can be
+    // lost, and every scan is written again by the next one. The Quarantine's safety rests on
+    // its manifests on disk, not on this setting.
+    this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.runMigrations();
   }
@@ -490,111 +506,13 @@ export class SQLiteStore {
         );
       }
 
-      const artStmt = this.db.prepare(`
-        INSERT OR REPLACE INTO artifacts (
-          id, schema_version, name, canonical_path, parent_dir, extension,
-          is_directory, size_bytes, physical_inode_key, hardlink_count, mode,
-          created_at, modified_at, mtime_ms, artifact_type, application_id,
-          workspace_id, group_id, session_ids_json, operation_ids_json,
-          provenance_confidence, cleanup_classification, cleanup_explanation,
-          deletion_consequences, shared_dependency_indicators_json, scan_id, quarantined
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const art of artifacts) {
-        artStmt.run(
-          art.id,
-          art.schemaVersion,
-          art.name,
-          art.canonicalPath,
-          art.parentDir,
-          art.extension,
-          art.isDirectory ? 1 : 0,
-          art.sizeBytes,
-          art.physicalInodeKey,
-          art.hardlinkCount,
-          art.mode,
-          art.createdAt,
-          art.modifiedAt,
-          art.mtimeMs,
-          art.artifactType,
-          art.applicationId,
-          art.workspaceId,
-          art.groupId,
-          JSON.stringify(art.sessionIds || []),
-          JSON.stringify(art.operationIds || []),
-          art.provenanceConfidence,
-          art.cleanupClassification,
-          art.cleanupExplanation,
-          art.deletionConsequences,
-          JSON.stringify(art.sharedDependencyIndicators || []),
-          art.scanId,
-          art.quarantined ? 1 : 0
-        );
-      }
+      // The file index (artifacts) is written afterwards, in pieces: saveArtifactIndex
+      void artifacts;
+      // Evidence, edges and recommendations stay in memory (see migration 8)
+      void evidence;
+      void provenanceEdges;
+      void recommendations;
 
-      const evStmt = this.db.prepare(`
-        INSERT OR REPLACE INTO evidence (
-          id, schema_version, subject_id, confidence, source_type,
-          source_ref, rule_id, summary, details_json, recorded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const ev of evidence) {
-        evStmt.run(
-          ev.id,
-          ev.schemaVersion,
-          ev.subjectId,
-          ev.confidence,
-          ev.sourceType,
-          ev.sourceRef,
-          ev.ruleId,
-          ev.summary,
-          JSON.stringify(ev.details || {}),
-          ev.recordedAt
-        );
-      }
-
-      const edgeStmt = this.db.prepare(`
-        INSERT OR REPLACE INTO provenance_edges (
-          id, schema_version, source_id, target_id, edge_type,
-          confidence, evidence_ids_json, explanation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const edge of provenanceEdges) {
-        edgeStmt.run(
-          edge.id,
-          edge.schemaVersion,
-          edge.sourceId,
-          edge.targetId,
-          edge.edgeType,
-          edge.confidence,
-          JSON.stringify(edge.evidenceIds || []),
-          edge.explanation
-        );
-      }
-
-      const recStmt = this.db.prepare(`
-        INSERT OR REPLACE INTO cleanup_recommendations (
-          id, schema_version, artifact_id, risk_category, artifact_type,
-          eligible_for_quarantine, eligible_for_bulk_cleanup,
-          requires_explicit_high_risk_override, reason, consequences,
-          shared_dependency_indicators_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const rec of recommendations) {
-        recStmt.run(
-          rec.id,
-          rec.schemaVersion,
-          rec.artifactId,
-          rec.riskCategory,
-          rec.artifactType,
-          rec.eligibleForQuarantine ? 1 : 0,
-          rec.eligibleForBulkCleanup ? 1 : 0,
-          rec.requiresExplicitHighRiskOverride ? 1 : 0,
-          rec.reason,
-          rec.consequences,
-          JSON.stringify(rec.sharedDependencyIndicators || [])
-        );
-      }
 
       this.db.exec('COMMIT;');
     } catch (err) {
@@ -604,6 +522,72 @@ export class SQLiteStore {
   }
 
   /** Several entries in one transaction (emptying the Quarantine can touch thousands). */
+  /**
+   * The file index of one app's newest scan: its old rows go, then the new ones, written in
+   * pieces of `chunk` rows, one transaction each, with a pause between them so the app answers
+   * while a large scan's index is written. `isCurrent()` false stops it (a newer scan started).
+   */
+  async saveArtifactIndex(applicationId, artifacts, { chunk = 20000, isCurrent = () => true } = {}) {
+    const artStmt = this.db.prepare(`
+        INSERT OR REPLACE INTO artifacts (
+          id, schema_version, name, canonical_path, parent_dir, extension,
+          is_directory, size_bytes, physical_inode_key, hardlink_count, mode,
+          created_at, modified_at, mtime_ms, artifact_type, application_id,
+          workspace_id, group_id, session_ids_json, operation_ids_json,
+          provenance_confidence, cleanup_classification, cleanup_explanation,
+          deletion_consequences, shared_dependency_indicators_json, scan_id, quarantined
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+    if (applicationId) this.db.prepare('DELETE FROM artifacts WHERE application_id = ?').run(applicationId);
+    for (let i = 0; i < artifacts.length; i += chunk) {
+      if (!isCurrent()) return false;
+      this.db.exec('BEGIN TRANSACTION;');
+      try {
+        for (const art of artifacts.slice(i, i + chunk)) {
+          artStmt.run(
+            art.id,
+            art.schemaVersion,
+            art.name,
+            art.canonicalPath,
+            art.parentDir,
+            art.extension,
+            art.isDirectory ? 1 : 0,
+            art.sizeBytes,
+            art.physicalInodeKey,
+            art.hardlinkCount,
+            art.mode,
+            art.createdAt,
+            art.modifiedAt,
+            art.mtimeMs,
+            art.artifactType,
+            art.applicationId,
+            art.workspaceId,
+            art.groupId,
+            JSON.stringify(art.sessionIds || []),
+            JSON.stringify(art.operationIds || []),
+            art.provenanceConfidence,
+            art.cleanupClassification,
+            art.cleanupExplanation,
+            art.deletionConsequences,
+            JSON.stringify(art.sharedDependencyIndicators || []),
+            art.scanId,
+            art.quarantined ? 1 : 0
+          );
+        }
+        this.db.exec('COMMIT;');
+      } catch (err) {
+        try {
+          this.db.exec('ROLLBACK;');
+        } catch {
+          // Closed meanwhile
+        }
+        return false;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return true;
+  }
+
   saveQuarantineEntries(entries) {
     this.db.exec('BEGIN TRANSACTION;');
     try {

@@ -337,7 +337,8 @@ export class Scanner {
         }
 
         const childPath = path.join(dirRealPath, dirent.name);
-        const childCheck = this.platformServices.inspectEntry(childPath, normalizedRoots);
+        // dirRealPath is a real folder inside the roots (checked above): the fast check holds
+        const childCheck = this.platformServices.inspectChild(dirRealPath, dirent.name, normalizedRoots);
 
         if (!childCheck.allowed) {
           if (childCheck.reason === 'PERMISSION_DENIED') {

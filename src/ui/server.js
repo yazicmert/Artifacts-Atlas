@@ -976,16 +976,22 @@ export function createAtlasServer(options = {}) {
         ) {
           return sendJson(res, 409, { ok: false, error: 'HOME_FOLDER_SCAN_NOT_ALLOWED' });
         }
-        const state = await activeService().scanAndAnalyze({
-          bundlePath: body.bundlePath || null,
-          additionalWorkspacePaths: Array.isArray(body.workspacePaths)
-            ? body.workspacePaths
-            : body.workspacePath
-              ? [body.workspacePath]
-              : [],
-          artificialDelayMs: Number(body.artificialDelayMs || 0),
-          scanScope: settings.scanScope
-        });
+        let state;
+        try {
+          state = await activeService().scanAndAnalyze({
+            bundlePath: body.bundlePath || null,
+            additionalWorkspacePaths: Array.isArray(body.workspacePaths)
+              ? body.workspacePaths
+              : body.workspacePath
+                ? [body.workspacePath]
+                : [],
+            artificialDelayMs: Number(body.artificialDelayMs || 0),
+            scanScope: settings.scanScope
+          });
+        } catch (err) {
+          if (err.message === 'SCAN_CANCELLED') return sendJson(res, 409, { ok: false, error: 'SCAN_CANCELLED' });
+          throw err;
+        }
         return sendJson(res, 200, {
           ok: true,
           state: stateForClient(state),
@@ -1506,6 +1512,9 @@ export function createAtlasServer(options = {}) {
         }
         resolve();
       });
+      // The window's open connections (a request in flight, a kept-alive socket) must not hold
+      // the app open while it quits
+      server.closeAllConnections?.();
     });
   };
 

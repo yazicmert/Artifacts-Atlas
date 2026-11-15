@@ -467,8 +467,10 @@ test('15 & 17. Scan cancellation and permission failure resilience', async () =>
       }
     });
 
-    const cancelledState = await scanPromise;
-    assert.equal(cancelledState.scan.status, ScanStatus.CANCELLED);
+    // A cancelled scan stops before the analysis and keeps nothing of itself
+    await assert.rejects(scanPromise, /SCAN_CANCELLED/);
+    assert.equal(cancelService.activeState.scan, null);
+    assert.equal(cancelService.scanInProgress, false);
   } finally {
     sandbox.cleanup();
   }
