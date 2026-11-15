@@ -101,7 +101,46 @@ export class ClaudeCodeAdapter {
     return dirs;
   }
 
-  parseProvenanceRecords({ application, authorizedRoots, platformServices }) {
+  parseProvenanceRecords(args) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) step = steps.next();
+    return step.value;
+  }
+
+  /**
+   * The same, a transcript at a time with a pause between them, so a scan of gigabytes of
+   * session records shows its progress and can be cancelled. onProgress gets
+   * { recordsDone, recordBytes }.
+   */
+  async parseProvenanceRecordsAsync(args, { signal = null, onProgress = () => {} } = {}) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) {
+      onProgress(step.value);
+      await new Promise((resolve) => setImmediate(resolve));
+      if (signal?.aborted) {
+        steps.return();
+        throw new Error('SCAN_CANCELLED');
+      }
+      step = steps.next();
+    }
+    return step.value;
+  }
+
+  *parseProvenanceSteps({ application, authorizedRoots, platformServices }) {
+    // realpath once per path, not once per line
+    const realMemo = new Map();
+    const real = (p) => {
+      let r = realMemo.get(p);
+      if (r === undefined) {
+        r = platformServices.resolveRealPathSafe(p);
+        realMemo.set(p, r);
+      }
+      return r;
+    };
+    let recordsDone = 0;
+    let recordBytes = 0;
     const workspacesByPath = new Map();
     const sessionsById = new Map();
     const operations = [];
@@ -128,37 +167,20 @@ export class ClaudeCodeAdapter {
         (a, b) => Number(isSubagentTranscript(a)) - Number(isSubagentTranscript(b)) || a.localeCompare(b)
       );
       for (const jsonlPath of jsonlFiles) {
-        let content = '';
-        try {
-          content = fs.readFileSync(jsonlPath, 'utf8');
-        } catch {
+        const read = readTranscriptStructure(jsonlPath);
+        if (!read) {
           continue;
         }
-
+        recordsDone += 1;
+        recordBytes += read.bytes;
+        malformedRecords.push(...read.malformed);
         const defaultSessionId = path.basename(jsonlPath, '.jsonl');
-        const lines = content.split(/\r?\n/);
         let opSeq = 0;
 
-        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-          const line = lines[lineIdx].trim();
-          if (!line) {
-            continue;
-          }
-
-          let record;
-          try {
-            record = JSON.parse(line);
-          } catch (err) {
-            malformedRecords.push({
-              sourcePath: jsonlPath,
-              lineNumber: lineIdx + 1,
-              error: err.message
-            });
-            continue;
-          }
+        for (const { lineIdx, record } of read.records) {
 
           const externalSessionId = String(record.sessionId || record.session_id || defaultSessionId);
-          const cwd = record.cwd ? platformServices.resolveRealPathSafe(record.cwd) : null;
+          const cwd = record.cwd ? real(record.cwd) : null;
           const timestamp = record.timestamp || record.createdAt || null;
 
           let workspace = null;
@@ -187,7 +209,7 @@ export class ClaudeCodeAdapter {
                 title: record.summary || record.sessionTitle || `Claude Session ${externalSessionId.slice(0, 8)}`,
                 startedAt: timestamp,
                 endedAt: timestamp,
-                sourcePath: platformServices.resolveRealPathSafe(jsonlPath),
+                sourcePath: real(jsonlPath),
                 adapterId: this.id,
                 operationCount: 0
               })
@@ -197,7 +219,7 @@ export class ClaudeCodeAdapter {
           const session = sessionsById.get(externalSessionId);
           // The file named after the session is its main transcript
           if (path.basename(jsonlPath, '.jsonl') === externalSessionId && !isSubagentTranscript(jsonlPath)) {
-            session.sourcePath = platformServices.resolveRealPathSafe(jsonlPath);
+            session.sourcePath = real(jsonlPath);
           }
           if (workspace && !session.workspaceId) {
             session.workspaceId = workspace.id;
@@ -264,10 +286,10 @@ export class ClaudeCodeAdapter {
                   toolName,
                   operationType,
                   targetPath: normalizedTarget
-                    ? platformServices.resolveRealPathSafe(normalizedTarget)
+                    ? real(normalizedTarget)
                     : null,
                   timestamp,
-                  sourceRecordRef: `${platformServices.resolveRealPathSafe(jsonlPath)}#L${lineIdx + 1}`,
+                  sourceRecordRef: `${real(jsonlPath)}#L${lineIdx + 1}`,
                   confidence: normalizedTarget
                     ? ProvenanceConfidence.VERIFIED
                     : ProvenanceConfidence.INFERRED
@@ -282,7 +304,7 @@ export class ClaudeCodeAdapter {
                 if (subPath) {
                   opSeq += 1;
                   session.operationCount += 1;
-                  const resolvedSub = platformServices.resolveRealPathSafe(
+                  const resolvedSub = real(
                     normalizeFileUriOrPath(subPath, cwd)
                   );
                   operations.push(
@@ -295,7 +317,7 @@ export class ClaudeCodeAdapter {
                       operationType: 'EDIT',
                       targetPath: resolvedSub,
                       timestamp,
-                      sourceRecordRef: `${platformServices.resolveRealPathSafe(jsonlPath)}#L${lineIdx + 1}`,
+                      sourceRecordRef: `${real(jsonlPath)}#L${lineIdx + 1}`,
                       confidence: ProvenanceConfidence.VERIFIED
                     })
                   );
@@ -304,6 +326,7 @@ export class ClaudeCodeAdapter {
             }
           }
         }
+        yield { recordsDone, recordBytes };
       }
     }
 
@@ -314,6 +337,78 @@ export class ClaudeCodeAdapter {
       malformedRecords
     };
   }
+}
+
+/**
+ * The structure of one Claude Code transcript: per line only the session ID, time, folder,
+ * stored title and the tool calls with the paths they name. Never message text. Kept in memory
+ * while the file's size and change time stay the same, so a scan after a cancelled one, or the
+ * next scan, reads only the transcripts that changed.
+ */
+const transcriptCache = new Map();
+const PATH_KEYS = ['file_path', 'path', 'target_file', 'notebook_path', 'output_file'];
+
+function toolUseStructure(block) {
+  const input = block.input && typeof block.input === 'object' ? block.input : {};
+  const kept = {};
+  for (const k of PATH_KEYS) if (typeof input[k] === 'string') kept[k] = input[k];
+  if (Array.isArray(input.edits)) {
+    kept.edits = input.edits.map((e) => ({ file_path: e?.file_path, path: e?.path }));
+  }
+  return { type: 'tool_use', name: block.name, input: kept };
+}
+
+function recordStructure(record) {
+  const blocks = Array.isArray(record?.message?.content)
+    ? record.message.content.filter((b) => b && b.type === 'tool_use').map(toolUseStructure)
+    : record?.type === 'tool_use'
+      ? [toolUseStructure(record)]
+      : [];
+  return {
+    sessionId: record.sessionId || record.session_id || null,
+    cwd: typeof record.cwd === 'string' ? record.cwd : null,
+    timestamp: record.timestamp || record.createdAt || null,
+    summary: typeof record.summary === 'string' ? record.summary : null,
+    sessionTitle: typeof record.sessionTitle === 'string' ? record.sessionTitle : null,
+    message: { content: blocks }
+  };
+}
+
+export function readTranscriptStructure(jsonlPath) {
+  const st = fs.lstatSync(jsonlPath, { throwIfNoEntry: false });
+  if (!st || !st.isFile()) return null;
+  const cached = transcriptCache.get(jsonlPath);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) return cached;
+  let content;
+  try {
+    content = fs.readFileSync(jsonlPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const records = [];
+  const malformed = [];
+  let lineIdx = -1;
+  let from = 0;
+  while (from <= content.length) {
+    let to = content.indexOf('\n', from);
+    if (to === -1) to = content.length;
+    lineIdx += 1;
+    const line = content.slice(from, to).trim();
+    from = to + 1;
+    if (!line) continue;
+    // A large line without a tool call is a tool's output or pasted text: it holds nothing read
+    // here (the session's ID, time and folder are on the other lines), so it is not parsed
+    if (line.length > 65536 && !line.includes('"tool_use"')) continue;
+    try {
+      records.push({ lineIdx, record: recordStructure(JSON.parse(line)) });
+    } catch (err) {
+      malformed.push({ sourcePath: jsonlPath, lineNumber: lineIdx + 1, error: err.message });
+    }
+  }
+  const result = { size: st.size, mtimeMs: st.mtimeMs, bytes: content.length, records, malformed };
+  transcriptCache.set(jsonlPath, result);
+  if (transcriptCache.size > 20000) transcriptCache.delete(transcriptCache.keys().next().value);
+  return result;
 }
 
 /**

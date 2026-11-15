@@ -183,3 +183,40 @@ test('LC5. Sign-in files, settings and what people keep in an AI app\'s folder a
     const cs = await codex.scanAndAnalyze({ bundlePath: 'atlas-known:codex' });
     assert.equal(cs.artifacts.find((a) => a.canonicalPath === codexAuth).cleanupClassification, 'PROTECTED');
   }));
+
+test('LC6. Session records: read for their structure only, kept while unchanged, and Cancel answers while they are read', () =>
+  sandbox(async (dir, make) => {
+    const { readTranscriptStructure } = await import('../src/adapters/adapter-registry.js');
+    const home = path.join(dir, 'home');
+    const proj = path.join(home, '.claude', 'projects', '-Users-me-app');
+    const SECRET = 'please refactor the billing module';
+    const files = [];
+    for (let f = 0; f < 30; f++) {
+      const sid = `${String(f).padStart(8, '0')}-1111-2222-3333-444455556666`;
+      const file = path.join(proj, `${sid}.jsonl`);
+      write(
+        file,
+        [
+          JSON.stringify({ sessionId: sid, cwd: path.join(home, 'app'), timestamp: '2026-11-01T00:00:00.000Z', type: 'user', message: { content: SECRET } }),
+          JSON.stringify({ sessionId: sid, timestamp: '2026-11-01T00:00:01.000Z', type: 'user', message: { content: [{ type: 'tool_result', content: 'z'.repeat(70000) }] } }),
+          JSON.stringify({ sessionId: sid, timestamp: '2026-11-01T00:00:02.000Z', type: 'assistant', message: { content: [{ type: 'text', text: SECRET }, { type: 'tool_use', name: 'Write', input: { file_path: path.join(home, 'app', 'a.js'), content: SECRET } }] } })
+        ].join('\n')
+      );
+      files.push(file);
+    }
+    const read = readTranscriptStructure(files[0]);
+    assert.equal(read.records.length, 2, 'the large tool output line is not parsed');
+    assert.ok(!JSON.stringify(read).includes(SECRET), 'no message text is kept');
+    assert.equal(read.records[1].record.message.content[0].input.file_path, path.join(home, 'app', 'a.js'));
+    assert.equal(readTranscriptStructure(files[0]), read, 'an unchanged transcript is not read again');
+    fs.appendFileSync(files[0], '\n');
+    assert.notEqual(readTranscriptStructure(files[0]), read, 'a changed one is');
+
+    const service = make({ homeDir: home });
+    const scan = service.scanAndAnalyze({ bundlePath: 'atlas-known:claude' });
+    service.cancelActiveScan();
+    await assert.rejects(scan, /SCAN_CANCELLED/);
+    const state = await service.scanAndAnalyze({ bundlePath: 'atlas-known:claude' });
+    assert.equal(state.sessions.length, 30);
+    assert.ok(state.operations.some((o) => o.operationType === 'WRITE'));
+  }));

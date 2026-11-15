@@ -165,13 +165,23 @@ export class ArtifactAtlasService {
       ? this.adapterRegistry.getAdapterById(application.adapterId)
       : this.adapterRegistry.fallbackAdapter;
 
-    const parsedRecords = application
-      ? adapter.parseProvenanceRecords({
-          application,
-          authorizedRoots: candidateRoots,
-          platformServices: this.platformServices
-        })
-      : { workspaces: [], sessions: [], operations: [], malformedRecords: [] };
+    // Session records are read a transcript at a time where the adapter can, so a large
+    // history shows its progress and Cancel answers while it is read
+    const recordArgs = { application, authorizedRoots: candidateRoots, platformServices: this.platformServices };
+    this.lastProgress = { phase: 'records', recordsDone: 0, recordBytes: 0 };
+    let parsedRecords = { workspaces: [], sessions: [], operations: [], malformedRecords: [] };
+    if (application && typeof adapter.parseProvenanceRecordsAsync === 'function') {
+      parsedRecords = await adapter.parseProvenanceRecordsAsync(recordArgs, {
+        signal,
+        onProgress: (p) => {
+          this.lastProgress = { phase: 'records', ...p };
+          if (typeof onProgress === 'function') onProgress(this.lastProgress);
+        }
+      });
+    } else if (application) {
+      parsedRecords = adapter.parseProvenanceRecords(recordArgs);
+    }
+    if (signal.aborted) throw new Error('SCAN_CANCELLED');
 
     // Project folders named in session transcripts hold the user's own work. By default only
     // the files a session's tool calls name are read there. With the "whole project folders"
