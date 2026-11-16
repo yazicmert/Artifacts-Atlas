@@ -13,7 +13,7 @@ export const REMADE_FOLDERS = new Set([
 ]);
 
 /** The dot-folders AI coding tools keep in the home folder. */
-export const AI_APP_HOMES = ['claude', 'codex', 'cursor', 'gemini', 'windsurf', 'codeium', 'continue', 'kiro', 'trae', 'aider'];
+export const AI_APP_HOMES = ['claude', 'codex', 'cursor', 'gemini', 'antigravity', 'windsurf', 'codeium', 'continue', 'kiro', 'trae', 'aider'];
 
 const homeSegment = `/\\.(?:${AI_APP_HOMES.join('|')})/`;
 

@@ -301,7 +301,15 @@ export class ClassificationEngine {
 
     // Records an app keeps of its conversations, read by where they are, never by their text:
     // Codex's thread database and prompt history, Cursor's chat databases and agent transcripts
+    // Gemini CLI keeps saved chats and logs per project under ~/.gemini/tmp/<hash>/; Antigravity
+    // keeps each conversation under ~/.gemini/antigravity/conversations and the plans and notes
+    // its agent wrote for it under brain/<id>/. None of it is made again.
+    const isGeminiRecord =
+      (lowerPath.includes('/.gemini/tmp/') && (lowerPath.includes('/chats/') || lowerName === 'logs.json' || lowerPath.includes('/checkpoints/'))) ||
+      lowerPath.includes('/.gemini/antigravity/conversations/') ||
+      lowerPath.includes('/.gemini/antigravity/brain/');
     const isSessionStore =
+      isGeminiRecord ||
       (lowerPath.includes('/.codex/') && (/^state(_\d+)?\.sqlite(-wal|-shm)?$/.test(lowerName) || lowerName === 'history.jsonl')) ||
       (lowerPath.includes('/.cursor/projects/') && lowerPath.includes('/agent-transcripts/')) ||
       ((lowerPath.includes('/cursor/user/globalstorage/') || lowerPath.includes('/cursor/user/workspacestorage/')) &&
@@ -334,7 +342,7 @@ export class ClassificationEngine {
         consequences: 'Removing it loses what you set up; the app does not make it again.'
       };
     }
-    if (/\/\.(claude|codex|cursor|gemini|windsurf|codeium|continue|kiro|trae)\/(plugins|extensions)\//.test(lowerPath)) {
+    if (/\/\.(claude|codex|cursor|gemini|antigravity|windsurf|codeium|continue|kiro|trae)\/(plugins|extensions)\//.test(lowerPath)) {
       return {
         artifactType: ArtifactType.USER_CONTENT,
         riskCategory: RiskCategory.HIGH,

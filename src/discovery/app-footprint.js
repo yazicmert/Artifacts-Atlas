@@ -156,7 +156,9 @@ export const KNOWN_APP_PROFILES = [
     windowsLocations: ['AppData/Roaming/nomic.ai', 'AppData/Local/nomic.ai']
   },
   { id: 'zed', ai: true, bundleIdPrefixes: ['dev.zed.'], names: ['zed'], extraLocations: [] },
-  { id: 'gemini', ai: true, bundleIdPrefixes: [], names: ['gemini', 'antigravity'], extraLocations: ['.gemini'] },
+  // Gemini CLI and Antigravity share ~/.gemini; Antigravity, built on VS Code, keeps its
+  // extensions in ~/.antigravity like Cursor's ~/.cursor
+  { id: 'gemini', ai: true, bundleIdPrefixes: ['com.google.antigravity'], names: ['gemini', 'antigravity'], extraLocations: ['.gemini', '.antigravity'] },
   // Microsoft's own Copilot app is a different product; its Store package is not GitHub Copilot
   { id: 'copilot', ai: true, bundleIdPrefixes: [], names: ['copilot', 'github copilot'], extraLocations: ['.config/github-copilot'], notStorePublishers: ['microsoft'] },
   { id: 'jan', ai: true, bundleIdPrefixes: ['jan.ai.'], names: ['jan'], extraLocations: [] },

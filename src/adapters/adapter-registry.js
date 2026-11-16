@@ -452,7 +452,31 @@ export class CursorAdapter {
     ];
   }
 
-  parseProvenanceRecords({ application, authorizedRoots, platformServices }) {
+  parseProvenanceRecords(args) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) step = steps.next();
+    return step.value;
+  }
+
+  /** A workspace's records at a time, with progress and Cancel, like the Claude Code reader. */
+  async parseProvenanceRecordsAsync(args, { signal = null, onProgress = () => {} } = {}) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) {
+      onProgress(step.value);
+      await new Promise((resolve) => setImmediate(resolve));
+      if (signal?.aborted) {
+        steps.return();
+        throw new Error('SCAN_CANCELLED');
+      }
+      step = steps.next();
+    }
+    return step.value;
+  }
+
+  *parseProvenanceSteps({ application, authorizedRoots, platformServices }) {
+    let recordsDone = 0;
     const workspacesByPath = new Map();
     const sessionsById = new Map();
     const operations = [];
@@ -607,6 +631,8 @@ export class CursorAdapter {
             });
           }
         }
+        recordsDone += 1;
+        yield { recordsDone, recordBytes: 0 };
       }
     }
 
@@ -648,11 +674,45 @@ export class CodexAdapter {
     ];
   }
 
-  parseProvenanceRecords({ application, authorizedRoots, platformServices }) {
+  parseProvenanceRecords(args) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) step = steps.next();
+    return step.value;
+  }
+
+  /** A rollout at a time, with progress and Cancel, like the Claude Code reader. */
+  async parseProvenanceRecordsAsync(args, { signal = null, onProgress = () => {} } = {}) {
+    const steps = this.parseProvenanceSteps(args);
+    let step = steps.next();
+    while (!step.done) {
+      onProgress(step.value);
+      await new Promise((resolve) => setImmediate(resolve));
+      if (signal?.aborted) {
+        steps.return();
+        throw new Error('SCAN_CANCELLED');
+      }
+      step = steps.next();
+    }
+    return step.value;
+  }
+
+  *parseProvenanceSteps({ application, authorizedRoots, platformServices }) {
     const workspacesByPath = new Map();
     const sessionsById = new Map();
     const operations = [];
     const malformedRecords = [];
+    const realMemo = new Map();
+    const real = (p) => {
+      let r = realMemo.get(p);
+      if (r === undefined) {
+        r = platformServices.resolveRealPathSafe(p);
+        realMemo.set(p, r);
+      }
+      return r;
+    };
+    let recordsDone = 0;
+    let recordBytes = 0;
 
     // Live sessions, and the ones Codex archived (same rollout files, in archived_sessions)
     const codexHome = platformServices.appHome('codex');
@@ -670,37 +730,17 @@ export class CodexAdapter {
       if (!fs.existsSync(root)) {
         continue;
       }
-      const rolloutFiles = safeWalkJsonlFiles(root, 5);
-      for (const rolloutPath of rolloutFiles) {
-        let lines = [];
-        try {
-          lines = fs.readFileSync(rolloutPath, 'utf8').split(/\r?\n/);
-        } catch {
-          continue;
-        }
-
-        const fallbackSessionId = path.basename(rolloutPath, '.jsonl');
+      for (const rolloutPath of safeWalkJsonlFiles(root, 5)) {
+        const read = readRolloutStructure(rolloutPath);
+        if (!read) continue;
+        recordsDone += 1;
+        recordBytes += read.bytes;
+        malformedRecords.push(...read.malformed);
+        const sourcePath = real(rolloutPath);
         let seq = 0;
-
-        for (let i = 0; i < lines.length; i++) {
-          const rawLine = lines[i].trim();
-          if (!rawLine) {
-            continue;
-          }
-          let entry;
-          try {
-            entry = JSON.parse(rawLine);
-          } catch (err) {
-            malformedRecords.push({
-              sourcePath: rolloutPath,
-              lineNumber: i + 1,
-              error: err.message
-            });
-            continue;
-          }
-
-          const sessionId = String(entry.session_id || entry.id || fallbackSessionId);
-          const cwd = entry.cwd ? platformServices.resolveRealPathSafe(entry.cwd) : null;
+        for (const { lineIdx, rec } of read.records) {
+          const sessionId = String(rec.sessionId || read.fileSessionId);
+          const cwd = rec.cwd ? real(rec.cwd) : null;
           let workspace = null;
           if (cwd) {
             if (!workspacesByPath.has(cwd)) {
@@ -716,7 +756,6 @@ export class CodexAdapter {
             }
             workspace = workspacesByPath.get(cwd);
           }
-
           if (!sessionsById.has(sessionId)) {
             sessionsById.set(
               sessionId,
@@ -724,43 +763,42 @@ export class CodexAdapter {
                 externalSessionId: sessionId,
                 applicationId: application.id,
                 workspaceId: workspace ? workspace.id : null,
-                title: entry.title || `Codex Rollout ${sessionId.slice(0, 8)}`,
-                startedAt: entry.timestamp || null,
-                endedAt: entry.timestamp || null,
-                sourcePath: platformServices.resolveRealPathSafe(rolloutPath),
+                title: rec.title || `Codex Rollout ${sessionId.slice(0, 8)}`,
+                startedAt: rec.timestamp || null,
+                endedAt: rec.timestamp || null,
+                sourcePath,
                 adapterId: this.id,
                 operationCount: 0
               })
             );
           }
-
           const session = sessionsById.get(sessionId);
-          if (entry.type === 'function_call' || entry.type === 'tool_call') {
-            const toolName = String(entry.name || entry.tool || 'apply_patch');
-            const target = entry.target_file || entry.file_path || entry.path;
-            if (target) {
-              seq += 1;
-              session.operationCount += 1;
-              const resolvedTarget = platformServices.resolveRealPathSafe(
-                normalizeFileUriOrPath(target, cwd)
-              );
-              operations.push(
-                createOperationModel({
-                  sessionId: session.id,
-                  applicationId: application.id,
-                  workspaceId: session.workspaceId,
-                  sequence: seq,
-                  toolName,
-                  operationType: entry.action === 'create' ? 'WRITE' : 'PATCH',
-                  targetPath: resolvedTarget,
-                  timestamp: entry.timestamp || null,
-                  sourceRecordRef: `${platformServices.resolveRealPathSafe(rolloutPath)}#L${i + 1}`,
-                  confidence: ProvenanceConfidence.VERIFIED
-                })
-              );
-            }
+          if (workspace && !session.workspaceId) session.workspaceId = workspace.id;
+          if (rec.timestamp) {
+            if (!session.startedAt || rec.timestamp < session.startedAt) session.startedAt = rec.timestamp;
+            if (!session.endedAt || rec.timestamp > session.endedAt) session.endedAt = rec.timestamp;
+          }
+          for (const op of rec.ops) {
+            seq += 1;
+            session.operationCount += 1;
+            const baseDir = cwd || (session.workspaceId ? [...workspacesByPath.values()].find((w) => w.id === session.workspaceId)?.canonicalPath : null);
+            operations.push(
+              createOperationModel({
+                sessionId: session.id,
+                applicationId: application.id,
+                workspaceId: session.workspaceId,
+                sequence: seq,
+                toolName: op.toolName,
+                operationType: op.operationType,
+                targetPath: real(normalizeFileUriOrPath(op.target, baseDir)),
+                timestamp: rec.timestamp || null,
+                sourceRecordRef: `${sourcePath}#L${lineIdx + 1}`,
+                confidence: ProvenanceConfidence.VERIFIED
+              })
+            );
           }
         }
+        yield { recordsDone, recordBytes };
       }
     }
 
@@ -771,6 +809,115 @@ export class CodexAdapter {
       malformedRecords
     };
   }
+}
+
+/**
+ * The structure of one Codex rollout, kept while the file is unchanged (like transcriptCache):
+ * per line the session ID, folder, time, title and the files a patch names. Both record shapes
+ * are read: the flat one (`function_call` with `target_file`) and Codex's own, where
+ * `session_meta` names the session and folder, `turn_context` the folder, and an `apply_patch`
+ * call names its files on `*** Add File:` / `*** Update File:` / `*** Move to:` lines. Never
+ * message text or patch contents.
+ */
+const rolloutCache = new Map();
+const PATCH_FILE_LINE = /^\*\*\* (Add File|Update File|Move to): (.+)$/gm;
+
+function patchTargets(text) {
+  const out = [];
+  if (typeof text !== 'string' || !text.includes('*** ')) return out;
+  for (const m of text.matchAll(PATCH_FILE_LINE)) {
+    out.push({ target: m[2].trim(), operationType: m[1] === 'Update File' ? 'PATCH' : 'WRITE' });
+  }
+  return out;
+}
+
+function rolloutRecordStructure(entry) {
+  const payload = entry && typeof entry.payload === 'object' && entry.payload ? entry.payload : null;
+  const rec = {
+    sessionId: entry.session_id || (entry.type === 'session_meta' && payload?.id) || null,
+    cwd: typeof entry.cwd === 'string' ? entry.cwd : typeof payload?.cwd === 'string' && (entry.type === 'session_meta' || entry.type === 'turn_context') ? payload.cwd : null,
+    timestamp: entry.timestamp || payload?.timestamp || null,
+    title: typeof entry.title === 'string' ? entry.title : null,
+    ops: []
+  };
+  // The flat shape
+  if (entry.type === 'function_call' || entry.type === 'tool_call') {
+    const target = entry.target_file || entry.file_path || entry.path;
+    if (target) {
+      rec.ops.push({
+        toolName: String(entry.name || entry.tool || 'apply_patch'),
+        target,
+        operationType: entry.action === 'create' ? 'WRITE' : 'PATCH'
+      });
+    }
+  }
+  // Codex's own shape: an apply_patch call, as a tool of its own or run through the shell
+  if (entry.type === 'response_item' && payload && /function_call|custom_tool_call|local_shell_call/.test(String(payload.type))) {
+    let text = '';
+    if (typeof payload.input === 'string') text = payload.input;
+    else if (typeof payload.arguments === 'string') {
+      try {
+        const args = JSON.parse(payload.arguments);
+        text = [args.input, args.patch, ...(Array.isArray(args.command) ? args.command : [])].filter((v) => typeof v === 'string').join('\n');
+      } catch {
+        text = payload.arguments;
+      }
+    } else if (Array.isArray(payload.action?.command)) {
+      text = payload.action.command.filter((v) => typeof v === 'string').join('\n');
+    }
+    for (const t of patchTargets(text)) {
+      rec.ops.push({ toolName: String(payload.name || 'apply_patch'), ...t });
+    }
+  }
+  return rec;
+}
+
+export function readRolloutStructure(rolloutPath) {
+  const st = fs.lstatSync(rolloutPath, { throwIfNoEntry: false });
+  if (!st || !st.isFile()) return null;
+  const cached = rolloutCache.get(rolloutPath);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) return cached;
+  let content;
+  try {
+    content = fs.readFileSync(rolloutPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const records = [];
+  const malformed = [];
+  let fileSessionId = null;
+  let lineIdx = -1;
+  let from = 0;
+  while (from <= content.length) {
+    let to = content.indexOf('\n', from);
+    if (to === -1) to = content.length;
+    lineIdx += 1;
+    const line = content.slice(from, to).trim();
+    from = to + 1;
+    if (!line) continue;
+    // A large line that is not a session record or a tool call is a model reply or a tool's
+    // output: nothing on it is read, so it is not parsed
+    if (line.length > 65536 && !/"(session_meta|function_call|custom_tool_call|local_shell_call|tool_call)"/.test(line)) continue;
+    try {
+      const rec = rolloutRecordStructure(JSON.parse(line));
+      if (!fileSessionId && rec.sessionId) fileSessionId = String(rec.sessionId);
+      records.push({ lineIdx, rec });
+    } catch (err) {
+      malformed.push({ sourcePath: rolloutPath, lineNumber: lineIdx + 1, error: err.message });
+    }
+  }
+  const result = {
+    size: st.size,
+    mtimeMs: st.mtimeMs,
+    bytes: content.length,
+    // Lines that name no session belong to the session the rollout's first record names
+    fileSessionId: fileSessionId || path.basename(rolloutPath, '.jsonl'),
+    records,
+    malformed
+  };
+  rolloutCache.set(rolloutPath, result);
+  if (rolloutCache.size > 20000) rolloutCache.delete(rolloutCache.keys().next().value);
+  return result;
 }
 
 /**

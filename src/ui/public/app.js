@@ -1004,7 +1004,7 @@ async function executeScan({ bundlePath, workspacePath }) {
           const prog = res.progress;
           const title = document.getElementById('scan-status-title');
           if (prog.phase === 'records') {
-            title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()} ${prog.recordsDone === 1 ? 'transcript' : 'transcripts'}, ${formatBytes(prog.recordBytes || 0)}`;
+            title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()}${prog.recordBytes ? `, ${formatBytes(prog.recordBytes)}` : ''}`;
           } else if (prog.phase === 'analyzing') {
             title.textContent = `Analyzing ${Number(prog.discoveredArtifactCount || 0).toLocaleString()} files…`;
           } else if (prog.phase === 'saving') {
