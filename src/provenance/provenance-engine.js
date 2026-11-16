@@ -102,6 +102,32 @@ export class ProvenanceEngine {
       );
     }
 
+    // Sessions whose ID appears in a path, looked up by the ID's first six characters at the
+    // places an ID can start (the start of a name, or after / \\ _ . -), so the work per file
+    // does not grow with the number of sessions
+    const idIndex = new Map();
+    sessions.forEach((sess, order) => {
+      const id = sess.externalSessionId;
+      if (!id || id.length < 6) return;
+      const key = id.slice(0, 6);
+      if (!idIndex.has(key)) idIndex.set(key, []);
+      idIndex.get(key).push({ sess, order });
+    });
+    const ID_START = new Set(['/', '\\', '_', '.', '-']);
+    const sessionsNamedInPath = (p) => {
+      if (idIndex.size === 0) return [];
+      const found = new Map();
+      for (let i = 0; i + 6 <= p.length; i++) {
+        if (i > 0 && !ID_START.has(p[i - 1])) continue;
+        const list = idIndex.get(p.slice(i, i + 6));
+        if (!list) continue;
+        for (const { sess, order } of list) {
+          if (p.startsWith(sess.externalSessionId, i)) found.set(order, sess);
+        }
+      }
+      return [...found.entries()].sort((a, b) => a[0] - b[0]).map(([, sess]) => sess);
+    };
+
     const appDataRoots = application
       ? application.knownDataDirectories.map((d) => path.resolve(d.path))
       : [];
@@ -215,13 +241,7 @@ export class ProvenanceEngine {
 
       // Case 3: INFERRED provenance when filename explicitly embeds a known externalSessionId
       // (e.g., debug/session-<id>.log or checkpoint-<sessionId>.json)
-      const matchedSessionsByIdInName = sessions.filter(
-        (s) =>
-          s.externalSessionId &&
-          s.externalSessionId.length >= 6 &&
-          (artifact.name.includes(s.externalSessionId) ||
-            artifact.canonicalPath.includes(s.externalSessionId))
-      );
+      const matchedSessionsByIdInName = sessionsNamedInPath(artifact.canonicalPath);
 
       if (matchedSessionsByIdInName.length > 0) {
         artifact.sessionIds = matchedSessionsByIdInName.map((s) => s.id);
