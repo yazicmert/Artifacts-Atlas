@@ -146,7 +146,7 @@ test('HTTP Desktop UI Server & REST API end-to-end integration test', async () =
     assert.equal(purged.status, 200);
     assert.equal(purged.data.purgedCount, 1);
     assert.equal(fs.existsSync(held.quarantinePath), false);
-    assert.equal(purged.data.quarantineEntries.find((e) => e.id === held.id).status, 'PURGED');
+    assert.equal(purged.data.quarantine.entries.find((e) => e.id === held.id).status, 'PURGED');
     assert.equal((await post('/api/quarantine/purge', { token: again.token })).status, 409, 'used once');
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -284,7 +284,9 @@ test('A large move runs in the background: the server keeps answering, other cle
     assert.equal((await call('/api/cleanup/quarantine/result')).status, 404, 'the result is taken once');
 
     // Put Back works once the move is done
-    const entry = result.data.quarantineEntries[0];
+    const entry = result.data.quarantine.entries[0];
+    assert.equal(result.data.quarantine.heldCount, ids.length);
+    assert.ok(JSON.stringify(result.data.quarantine).length < 2e6, 'the window gets a summary, not every entry');
     const restored = await call('/api/cleanup/restore', { entryId: entry.id });
     assert.equal(restored.status, 200);
   } finally {
