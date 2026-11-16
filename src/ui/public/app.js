@@ -1003,10 +1003,14 @@ async function executeScan({ bundlePath, workspacePath }) {
         if (pollingProgress && res.progress) {
           const prog = res.progress;
           const title = document.getElementById('scan-status-title');
-          if (prog.phase === 'analyzing') {
+          if (prog.phase === 'records') {
+            title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()}${prog.recordBytes ? `, ${formatBytes(prog.recordBytes)}` : ''}`;
+          } else if (prog.phase === 'analyzing') {
             title.textContent = `Analyzing ${Number(prog.discoveredArtifactCount || 0).toLocaleString()} files…`;
           } else if (prog.phase === 'saving') {
             title.textContent = 'Saving the index…';
+          } else {
+            title.textContent = `Scanning ${bundlePath ? appNameFromPath(bundlePath) : 'folder'}…`;
           }
           if (prog.currentPath) {
             document.getElementById('scan-current-path').textContent = prog.currentPath;
