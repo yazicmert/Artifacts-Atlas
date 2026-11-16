@@ -152,7 +152,11 @@ export class ArtifactAtlasService {
     let skipAllDenied = typeof onPermissionNeeded !== 'function';
     const askPermission = async (paths) => {
       if (skipAllDenied || signal.aborted) return 'skip';
+      // The window shows that the scan is waiting for the user, not stuck
+      const before = this.lastProgress;
+      this.lastProgress = { ...(before || {}), phase: 'permission', currentPath: paths[0] || null };
       const decision = await onPermissionNeeded(paths);
+      this.lastProgress = before;
       if (decision === 'skip-all') skipAllDenied = true;
       if (signal.aborted) throw new Error('SCAN_CANCELLED');
       return decision === 'retry' ? 'retry' : 'skip';

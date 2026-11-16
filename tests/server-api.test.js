@@ -429,3 +429,52 @@ test('A scan waits for a folder it cannot read: Try Again reads it, Skip goes on
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
   }
 });
+
+test('A scan that cannot read an app data folder asks before anything else, and says it is waiting', async () => {
+  const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-early-permission-'));
+  const { server, shutdown, sessionToken } = createAtlasServer({ sandboxRoot, dataDir: sandboxRoot, scheduledDeletions: false });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (p, body) => {
+    const res = await fetch(`${base}${p}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-Atlas-Token': sessionToken },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return { status: res.status, data: await res.json() };
+  };
+  const realReaddir = fs.readdirSync;
+  try {
+    const locked = path.join(fs.realpathSync(sandboxRoot), 'sandbox-home', 'Library', 'Caches');
+    fs.readdirSync = (p, o) => {
+      if (String(p) === locked) {
+        const err = new Error('EPERM: operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      }
+      return realReaddir(p, o);
+    };
+    const claude = (await call('/api/bootstrap')).data.availableBundles.find((b) => b.name === 'Claude Code');
+    await call('/api/scan/start', { bundlePath: claude.bundlePath, background: true });
+    let progress = null;
+    for (let i = 0; i < 200 && !progress?.permission; i++) {
+      progress = (await call('/api/scan/progress')).data;
+      if (!progress.permission) await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(progress.permission, 'the question is there from the start');
+    assert.ok(progress.permission.paths.includes(locked));
+    assert.equal(progress.progress.phase, 'permission', 'the window can say it is waiting');
+    await call('/api/scan/permission', { id: progress.permission.id, decision: 'skip-all' });
+    let done = null;
+    for (let i = 0; i < 400 && !done; i++) {
+      const r = await call('/api/scan/result');
+      if (!r.data.pending) done = r;
+      else await new Promise((r2) => setTimeout(r2, 25));
+    }
+    assert.equal(done.status, 200);
+  } finally {
+    fs.readdirSync = realReaddir;
+    await shutdown();
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});

@@ -1001,11 +1001,15 @@ async function executeScan({ bundlePath, workspacePath }) {
     while (pollingProgress) {
       try {
         const res = await apiRequest('/api/scan/progress');
+        // A scan can ask before it reports any progress (an app folder it cannot read is found
+        // first), so the question is shown whatever the progress says
+        if (pollingProgress) showScanPermission(res.permission || null);
         if (pollingProgress && res.progress) {
           const prog = res.progress;
           const title = document.getElementById('scan-status-title');
-          showScanPermission(res.permission || null);
-          if (prog.phase === 'records') {
+          if (prog.phase === 'permission') {
+            title.textContent = 'Waiting for your answer…';
+          } else if (prog.phase === 'records') {
             title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()}${prog.recordBytes ? `, ${formatBytes(prog.recordBytes)}` : ''}`;
           } else if (prog.phase === 'analyzing') {
             title.textContent = `Analyzing ${Number(prog.discoveredArtifactCount || 0).toLocaleString()} files…`;
