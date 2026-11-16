@@ -344,3 +344,86 @@ test('Review first by folder: groups instead of files, a group selects its files
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
   }
 });
+
+test('A scan waits for a folder it cannot read: Try Again reads it, Skip goes on, Cancel ends the wait', async () => {
+  const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-scan-permission-'));
+  const { server, shutdown, sessionToken } = createAtlasServer({ sandboxRoot, dataDir: sandboxRoot, scheduledDeletions: false });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (p, body) => {
+    const res = await fetch(`${base}${p}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'X-Atlas-Token': sessionToken },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return { status: res.status, data: await res.json() };
+  };
+  const realAccess = fs.accessSync;
+  try {
+    const home = path.join(fs.realpathSync(sandboxRoot), 'sandbox-home');
+    const locked = path.join(home, '.claude', 'locked');
+    fs.mkdirSync(locked, { recursive: true });
+    fs.writeFileSync(path.join(locked, 'inside.log'), 'x');
+    // The system refuses this folder until the user allows it
+    let allowed = false;
+    fs.accessSync = (p, mode) => {
+      if (!allowed && String(p) === locked) {
+        const err = new Error('EPERM: operation not permitted');
+        err.code = 'EPERM';
+        throw err;
+      }
+      return realAccess(p, mode);
+    };
+    const claude = (await call('/api/bootstrap')).data.availableBundles.find((b) => b.name === 'Claude Code');
+    const waitForPermission = async () => {
+      for (let i = 0; i < 200; i++) {
+        const p = (await call('/api/scan/progress')).data;
+        if (p.permission) return p.permission;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return null;
+    };
+    const result = async () => {
+      for (let i = 0; i < 400; i++) {
+        const r = await call('/api/scan/result');
+        if (!r.data.pending) return r;
+        await new Promise((r2) => setTimeout(r2, 25));
+      }
+      return null;
+    };
+
+    // Try Again after allowing: the folder is read
+    assert.equal((await call('/api/scan/start', { bundlePath: claude.bundlePath, background: true })).status, 202);
+    const asked = await waitForPermission();
+    assert.ok(asked, 'the scan asks');
+    assert.deepEqual(asked.paths, [locked]);
+    allowed = true;
+    assert.equal((await call('/api/scan/permission', { id: asked.id, decision: 'retry' })).status, 200);
+    const done = await result();
+    assert.equal(done.status, 200);
+    assert.equal((await call('/api/selection/resolve', { kind: 'safe' })).status, 200);
+    assert.ok(done.data.state.scan.permissionLimitations.every((l) => l.path !== locked));
+
+    // Skip: the scan goes on without it and says so
+    allowed = false;
+    await call('/api/scan/start', { bundlePath: claude.bundlePath, background: true });
+    const again = await waitForPermission();
+    await call('/api/scan/permission', { id: again.id, decision: 'skip' });
+    const skipped = await result();
+    assert.equal(skipped.status, 200);
+    assert.ok(skipped.data.state.scan.permissionLimitations.some((l) => l.path === locked));
+
+    // Cancel while it waits: the wait ends and the scan stops
+    await call('/api/scan/start', { bundlePath: claude.bundlePath, background: true });
+    assert.ok(await waitForPermission());
+    await call('/api/scan/cancel', {});
+    const cancelled = await result();
+    assert.equal(cancelled.status, 409);
+    assert.equal(cancelled.data.error, 'SCAN_CANCELLED');
+    assert.equal((await call('/api/scan/progress')).data.permission, null);
+  } finally {
+    fs.accessSync = realAccess;
+    await shutdown();
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  }
+});

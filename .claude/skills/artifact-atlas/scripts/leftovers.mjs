@@ -33,7 +33,8 @@ if (!root) {
 
 const result = spawnSync(
   process.execPath,
-  ['--no-warnings', path.join(root, 'src', 'cli.js'), 'leftovers', ...process.argv.slice(2)],
+  // Scans have no file limit: room for a few million files
+  ['--no-warnings', '--max-old-space-size=8192', path.join(root, 'src', 'cli.js'), 'leftovers', ...process.argv.slice(2)],
   { stdio: 'inherit' }
 );
 process.exit(result.status ?? 1);

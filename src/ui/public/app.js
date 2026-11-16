@@ -1003,10 +1003,17 @@ async function executeScan({ bundlePath, workspacePath }) {
         if (pollingProgress && res.progress) {
           const prog = res.progress;
           const title = document.getElementById('scan-status-title');
+          showScanPermission(res.permission || null);
           if (prog.phase === 'records') {
             title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()}${prog.recordBytes ? `, ${formatBytes(prog.recordBytes)}` : ''}`;
           } else if (prog.phase === 'analyzing') {
             title.textContent = `Analyzing ${Number(prog.discoveredArtifactCount || 0).toLocaleString()} files…`;
+          } else if (prog.phase === 'linking') {
+            title.textContent = 'Linking files to their sessions…';
+          } else if (prog.phase === 'classifying') {
+            title.textContent = 'Judging what is safe to remove…';
+          } else if (prog.phase === 'mapping') {
+            title.textContent = 'Drawing the map…';
           } else if (prog.phase === 'saving') {
             title.textContent = 'Saving the index…';
           } else {
@@ -1034,10 +1041,20 @@ async function executeScan({ bundlePath, workspacePath }) {
 
   try {
     uiState.scanCancelled = false;
-    const res = await apiRequest('/api/scan/start', 'POST', {
+    // The scan runs in the background (it may wait for the user to allow a folder); the window
+    // takes its result when it is done
+    await apiRequest('/api/scan/start', 'POST', {
       bundlePath,
-      workspacePaths: workspacePath ? [workspacePath] : []
+      workspacePaths: workspacePath ? [workspacePath] : [],
+      background: true
     });
+    let res = null;
+    while (!res) {
+      await new Promise((r) => setTimeout(r, 300));
+      const r = await apiRequest('/api/scan/result', 'GET');
+      if (!r.pending) res = r;
+    }
+    showScanPermission(null);
     // Cancelled just as it finished: the window has already gone back
     if (uiState.scanCancelled) return;
 
@@ -1066,6 +1083,48 @@ async function executeScan({ bundlePath, workspacePath }) {
     uiState.scanCancelled = false;
     scanViz.stop();
   }
+}
+
+/* A scan waiting to be allowed to read folders: which ones, and the user's answer. */
+function showScanPermission(request) {
+  const modal = document.getElementById('scan-permission-modal');
+  if (!request) {
+    uiState.scanPermissionId = null;
+    modal.classList.add('hidden');
+    return;
+  }
+  if (uiState.scanPermissionId === request.id) return;
+  uiState.scanPermissionId = request.id;
+  const mac = Boolean(request.settingsTarget);
+  document.getElementById('scan-permission-body').innerHTML = `
+    <p class="inspector-note">${
+      mac
+        ? 'macOS did not let Artifact Atlas read these folders. To include them, turn on Full Disk Access for Artifact Atlas in System Settings, then choose Try Again. If it still cannot read them, macOS may need Artifact Atlas to be reopened; Skip goes on without them.'
+        : 'The system did not let Artifact Atlas read these folders. Give your account access to them, then choose Try Again, or Skip to go on without them.'
+    }</p>
+    <div class="kv-list">${request.paths.map((p) => `<div class="kv-item"><span class="kv-key mono">${escapeHtml(shortPath(p))}</span></div>`).join('')}</div>
+    ${request.more ? `<p class="inspector-note">and ${pluralize(request.more, 'more folder')}</p>` : ''}
+    <p class="inspector-note">The scan waits until you choose.</p>`;
+  document.getElementById('scan-permission-settings').classList.toggle('hidden', !mac);
+  modal.classList.remove('hidden');
+}
+
+async function answerScanPermission(decision) {
+  const id = uiState.scanPermissionId;
+  if (!id) return;
+  showScanPermission(null);
+  try {
+    await apiRequest('/api/scan/permission', 'POST', { id, decision });
+  } catch {
+    // The scan has moved on (cancelled or finished)
+  }
+}
+
+function bindScanPermissionEvents() {
+  document.getElementById('scan-permission-retry').addEventListener('click', () => answerScanPermission('retry'));
+  document.getElementById('scan-permission-skip').addEventListener('click', () => answerScanPermission('skip'));
+  document.getElementById('scan-permission-skip-all').addEventListener('click', () => answerScanPermission('skip-all'));
+  document.getElementById('scan-permission-settings').addEventListener('click', () => openSystemTarget('settings:full-disk-access'));
 }
 
 /* Back to what was on screen before the scan: the last scan's map, or the start. */
@@ -3301,9 +3360,11 @@ function bindExplorerControls() {
     renderTreemapView();
   });
 
+  bindScanPermissionEvents();
   document.getElementById('cancel-scan-btn').addEventListener('click', async () => {
     // The window goes back at once; the scan stops at its next step and keeps nothing
     uiState.scanCancelled = true;
+    showScanPermission(null);
     leaveScanningView();
     showToast('Scan cancelled.');
     try {

@@ -11,7 +11,7 @@
     "artifact-atlas": "./src/cli.js"
   },
   "scripts": {
-    "start": "node src/cli.js serve",
+    "start": "node --max-old-space-size=8192 src/cli.js serve",
     "dev": "node src/cli.js serve --port 4310",
     "demo": "node src/cli.js demo",
     "scan": "node src/cli.js scan",

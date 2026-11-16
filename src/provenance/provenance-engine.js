@@ -128,6 +128,18 @@ export class ProvenanceEngine {
       return [...found.entries()].sort((a, b) => a[0] - b[0]).map(([, sess]) => sess);
     };
 
+    // Files a session wrote, by project and name without its ending, so a build output finds
+    // its source in one look-up instead of searching every file (the first two are enough:
+    // one of them is not the output itself)
+    const verifiedByStem = new Map();
+    for (const other of artifacts) {
+      if (!other.workspaceId || !opsByTargetPath.has(other.canonicalPath)) continue;
+      const key = `${other.workspaceId}\u0000${path.basename(other.name, other.extension)}`;
+      const list = verifiedByStem.get(key) || [];
+      if (list.length < 2) list.push(other);
+      verifiedByStem.set(key, list);
+    }
+
     const appDataRoots = application
       ? application.knownDataDirectories.map((d) => path.resolve(d.path))
       : [];
@@ -281,12 +293,8 @@ export class ProvenanceEngine {
       );
       if (isBuildOrDerivedDir && artifact.workspaceId) {
         const stem = path.basename(artifact.name, artifact.extension).replace(/\.(bundle|min|chunk|js|css)$/i, '');
-        const matchingVerifiedSourceArtifact = artifacts.find(
-          (other) =>
-            other.id !== artifact.id &&
-            other.workspaceId === artifact.workspaceId &&
-            opsByTargetPath.has(other.canonicalPath) &&
-            path.basename(other.name, other.extension) === stem
+        const matchingVerifiedSourceArtifact = (verifiedByStem.get(`${artifact.workspaceId}\u0000${stem}`) || []).find(
+          (other) => other.id !== artifact.id
         );
 
         if (matchingVerifiedSourceArtifact) {

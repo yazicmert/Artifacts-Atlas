@@ -17,7 +17,7 @@ export const PROJECT_BULK_DIRECTORIES = new Set([
 ]);
 
 export class Scanner {
-  constructor({ platformServices, maxFiles = 300000 }) {
+  constructor({ platformServices, maxFiles = Infinity }) {
     this.platformServices = platformServices;
     this.maxFiles = maxFiles;
   }
@@ -43,7 +43,10 @@ export class Scanner {
     extraFiles = [],
     // 'skip': dependency and Git folders inside project folders are left out.
     // 'measure': they are measured as a whole (file count and size), never listed.
-    bulkDirectoryMode = 'skip'
+    bulkDirectoryMode = 'skip',
+    // Asked when a folder cannot be listed for lack of permission: resolves to 'retry' (the
+    // user allowed it; list it again) or 'skip'. Without it the folder is recorded and skipped.
+    onPermissionDenied = null
   }) {
     // Inside project folders, dependency and version-control folders are not listed file by
     // file: they can hold hundreds of thousands of files that no cleanup should touch one at
@@ -309,17 +312,27 @@ export class Scanner {
 
       // Test whether directory is readable (fs.accessSync R_OK + readdirSync)
       let dirEntries = [];
-      try {
-        fs.accessSync(dirRealPath, fs.constants.R_OK | fs.constants.X_OK);
-        dirEntries = fs.readdirSync(dirRealPath, { withFileTypes: true });
-      } catch (err) {
-        scanRecord.permissionLimitations.push({
-          path: dirRealPath,
-          reason: 'Cannot list directory contents due to permissions',
-          code: err.code || 'EACCES'
-        });
-        emitProgress();
-        return;
+      for (;;) {
+        try {
+          fs.accessSync(dirRealPath, fs.constants.R_OK | fs.constants.X_OK);
+          dirEntries = fs.readdirSync(dirRealPath, { withFileTypes: true });
+          break;
+        } catch (err) {
+          // The scan waits while the user is asked, and lists the folder again if they allowed it
+          const denied = err.code === 'EACCES' || err.code === 'EPERM';
+          if (denied && typeof onPermissionDenied === 'function' && !signal?.aborted) {
+            emitProgress();
+            const decision = await onPermissionDenied(dirRealPath);
+            if (decision === 'retry' && !signal?.aborted) continue;
+          }
+          scanRecord.permissionLimitations.push({
+            path: dirRealPath,
+            reason: 'Cannot list directory contents due to permissions',
+            code: err.code || 'EACCES'
+          });
+          emitProgress();
+          return;
+        }
       }
 
       for (const dirent of dirEntries) {

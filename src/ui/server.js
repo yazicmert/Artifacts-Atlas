@@ -577,6 +577,21 @@ export function createAtlasServer(options = {}) {
   // Deletions the user scheduled with the unused-files cleanup: checked shortly after start and
   // every hour while the app is open, for every vault in use (see runScheduledDeletions)
   const clock = options.now || (() => Date.now());
+  // A scan started by the window runs in the background; it may wait for the user to allow a
+  // folder it could not read (the permission request below)
+  let scanJob = null;
+  let permissionRequest = null;
+  const clearPermissionRequest = (decision) => {
+    const pending = permissionRequest;
+    permissionRequest = null;
+    if (pending) pending.resolve(decision);
+  };
+  const askScanPermission = (paths) =>
+    new Promise((resolve) => {
+      clearPermissionRequest('skip');
+      permissionRequest = { id: crypto.randomBytes(8).toString('hex'), paths: [...paths], resolve };
+    });
+
   // The one move (or deletion) running now, with its progress. Files move in batches and the
   // app keeps answering meanwhile; anything else that moves, restores, deletes or rescans waits.
   let moveJob = null;
@@ -801,7 +816,8 @@ export function createAtlasServer(options = {}) {
       let data = '';
       req.on('data', (chunk) => {
         data += chunk;
-        if (data.length > 16 * 1024 * 1024) {
+        // A selection of a million files is about 30 MB of ids; the window is the only sender
+        if (data.length > 128 * 1024 * 1024) {
           reject(new Error('Request payload too large'));
           req.destroy();
         }
@@ -976,18 +992,42 @@ export function createAtlasServer(options = {}) {
         ) {
           return sendJson(res, 409, { ok: false, error: 'HOME_FOLDER_SCAN_NOT_ALLOWED' });
         }
+        const service = activeService();
+        const scanArgs = {
+          bundlePath: body.bundlePath || null,
+          additionalWorkspacePaths: Array.isArray(body.workspacePaths)
+            ? body.workspacePaths
+            : body.workspacePath
+              ? [body.workspacePath]
+              : [],
+          artificialDelayMs: Number(body.artificialDelayMs || 0),
+          scanScope: settings.scanScope
+        };
+        // From the window the scan runs in the background: it can wait for the user to allow a
+        // folder (in System Settings) without the request running into a time limit
+        if (body.background) {
+          clearPermissionRequest('skip');
+          scanJob = { status: 'running', outcome: null };
+          const job = scanJob;
+          service
+            .scanAndAnalyze({ ...scanArgs, onPermissionNeeded: askScanPermission })
+            .then((state) => {
+              job.outcome = { status: 200, body: { ok: true, state: stateForClient(state), quarantineEntries: service.quarantineEntriesWithSessions() } };
+            })
+            .catch((err) => {
+              job.outcome = err.message === 'SCAN_CANCELLED'
+                ? { status: 409, body: { ok: false, error: 'SCAN_CANCELLED' } }
+                : { status: 500, body: { ok: false, error: err.message } };
+            })
+            .finally(() => {
+              job.status = 'done';
+              clearPermissionRequest('skip');
+            });
+          return sendJson(res, 202, { ok: true, started: true });
+        }
         let state;
         try {
-          state = await activeService().scanAndAnalyze({
-            bundlePath: body.bundlePath || null,
-            additionalWorkspacePaths: Array.isArray(body.workspacePaths)
-              ? body.workspacePaths
-              : body.workspacePath
-                ? [body.workspacePath]
-                : [],
-            artificialDelayMs: Number(body.artificialDelayMs || 0),
-            scanScope: settings.scanScope
-          });
+          state = await service.scanAndAnalyze(scanArgs);
         } catch (err) {
           if (err.message === 'SCAN_CANCELLED') return sendJson(res, 409, { ok: false, error: 'SCAN_CANCELLED' });
           throw err;
@@ -1004,8 +1044,25 @@ export function createAtlasServer(options = {}) {
         return sendJson(res, 200, {
           ok: true,
           active: Boolean(svc.scanInProgress),
-          progress: svc.lastProgress
+          progress: svc.lastProgress,
+          // Folders the scan is waiting to be allowed to read
+          permission: permissionRequest
+            ? { id: permissionRequest.id, paths: permissionRequest.paths.slice(0, 20), more: Math.max(0, permissionRequest.paths.length - 20), settingsTarget: platform === 'darwin' ? 'settings:full-disk-access' : null }
+            : null
         });
+      }
+      if (url.pathname === '/api/scan/permission' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (!permissionRequest || body.id !== permissionRequest.id) return sendJson(res, 404, { ok: false, error: 'NO_PERMISSION_REQUEST' });
+        clearPermissionRequest(['retry', 'skip', 'skip-all'].includes(body.decision) ? body.decision : 'skip');
+        return sendJson(res, 200, { ok: true });
+      }
+      if (url.pathname === '/api/scan/result' && req.method === 'GET') {
+        if (!scanJob) return sendJson(res, 404, { ok: false, error: 'NO_SCAN' });
+        if (scanJob.status !== 'done') return sendJson(res, 202, { ok: true, pending: true });
+        const { outcome } = scanJob;
+        scanJob = null;
+        return sendJson(res, outcome.status, outcome.body);
       }
 
       if (url.pathname === '/api/permissions' && req.method === 'GET') {
@@ -1133,6 +1190,8 @@ export function createAtlasServer(options = {}) {
       }
 
       if (url.pathname === '/api/scan/cancel' && req.method === 'POST') {
+        // A scan waiting for the user stops waiting
+        clearPermissionRequest('skip');
         const result = activeService().cancelActiveScan();
         return sendJson(res, 200, { ok: true, ...result });
       }
@@ -1492,6 +1551,7 @@ export function createAtlasServer(options = {}) {
     clearInterval(scheduledDeletionInterval);
     // A move in progress stops after the file in hand and saves its records before the
     // databases close; the files not reached stay where they were
+    clearPermissionRequest('skip');
     if (moveStop) moveStop.abort();
     if (moveRun) await moveRun.catch(() => {});
     return new Promise((resolve) => {

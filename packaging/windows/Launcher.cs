@@ -106,7 +106,8 @@ internal static class Launcher
         ProcessStartInfo info = new ProcessStartInfo();
         info.FileName = node;
         // The backend stops by itself when this program is gone (--parent-pid)
-        info.Arguments = Quote(cli) + " serve --port 0 --data-dir " + Quote(dataDir)
+        // Scans have no file limit: room for a few million listed files
+        info.Arguments = "--max-old-space-size=8192 " + Quote(cli) + " serve --port 0 --data-dir " + Quote(dataDir)
             + " --parent-pid " + Process.GetCurrentProcess().Id;
         info.WorkingDirectory = Path.GetDirectoryName(node);
         info.UseShellExecute = false;

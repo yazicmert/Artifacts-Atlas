@@ -174,18 +174,10 @@ export class ClassificationEngine {
       group.riskSummary = elevateRisk(group.riskSummary, result.riskCategory);
       artifact.groupId = group.id;
 
-      recommendations.push(
-        createCleanupRecommendationModel({
-          artifactId: artifact.id,
-          riskCategory: result.riskCategory,
-          artifactType: result.artifactType,
-          provenanceConfidence: artifact.provenanceConfidence,
-          reason: result.explanation,
-          consequences: result.consequences,
-          sharedDependencyIndicators: artifact.sharedDependencyIndicators
-        })
-      );
+      // A recommendation per file was never read back: the file carries its risk, explanation
+      // and consequences itself, and a million files would hold a million copies
     }
+    void createCleanupRecommendationModel;
 
     return {
       artifacts,
