@@ -184,7 +184,7 @@ jobs:
             dist/ArtifactAtlas-Windows.zip \
             dist/SHA256SUMS.txt \
             "${FLAGS[@]}"
-          Download for **[macOS](https://github.com/yazicmert/basket/releases/download/${TAG}/ArtifactAtlas-macOS.dmg)** (14 or later, Apple silicon) or **[Windows](https://github.com/yazicmert/basket/releases/download/${TAG}/ArtifactAtlas-Windows.zip)** (10 or 11). If you already have the app, its update button installs this version.
+          Download for **[macOS](https://github.com/yazicmert/Artifacts-Atlas/releases/download/${TAG}/ArtifactAtlas-macOS.dmg)** (14 or later, Apple silicon) or **[Windows](https://github.com/yazicmert/Artifacts-Atlas/releases/download/${TAG}/ArtifactAtlas-Windows.zip)** (10 or 11). If you already have the app, its update button installs this version.
 
           **First launch.** The builds are not yet notarized or signed with a certificate. On macOS, choose *Open Anyway* in System Settings → Privacy & Security. On Windows, choose *More info*, then *Run anyway*.
 

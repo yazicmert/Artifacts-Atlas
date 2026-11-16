@@ -10,7 +10,7 @@ import path from 'node:path';
  * triggers a macOS consent prompt or reads file contents.
  */
 
-export const SITE_BASE_URL = 'https://yazicmert.github.io/basket';
+export const SITE_BASE_URL = 'https://yazicmert.github.io/Artifacts-Atlas';
 
 export const PermissionStatus = Object.freeze({
   GRANTED: 'GRANTED',

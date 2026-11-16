@@ -33,6 +33,6 @@ Artifact Atlas measures what an AI app leaves on disk and ties files to the sess
 
 ## Rules
 
-- View only. Never delete, move or `rm` the files this lists, and do not run Artifact Atlas's `quarantine` command for the user. To clean up, point them to the Artifact Atlas app (https://yazicmert.github.io/basket/): files go to its Quarantine first and can be put back.
+- View only. Never delete, move or `rm` the files this lists, and do not run Artifact Atlas's `quarantine` command for the user. To clean up, point them to the Artifact Atlas app (https://yazicmert.github.io/Artifacts-Atlas/): files go to its Quarantine first and can be put back.
 - Never read session transcripts or quote prompts to describe a session; use the labels the summary gives.
 - Do not pass `--read-home` without the user's yes, and do not add it to any allow list.

@@ -151,8 +151,8 @@ function downloadResponse(body, { url, status = 200 } = {}) {
 
 test('updater: release URLs, digest parsing and where the app can replace itself', () => {
   assert.deepEqual(selfUpdate.releaseAssetUrls('v0.5.0'), {
-    zipUrl: 'https://github.com/yazicmert/basket/releases/download/v0.5.0/ArtifactAtlas-macOS.zip',
-    sumsUrl: 'https://github.com/yazicmert/basket/releases/download/v0.5.0/SHA256SUMS.txt'
+    zipUrl: 'https://github.com/yazicmert/Artifacts-Atlas/releases/download/v0.5.0/ArtifactAtlas-macOS.zip',
+    sumsUrl: 'https://github.com/yazicmert/Artifacts-Atlas/releases/download/v0.5.0/SHA256SUMS.txt'
   });
   assert.equal(selfUpdate.releaseAssetUrls('../../evil'), null);
 
@@ -192,7 +192,7 @@ test('updater: a download is kept only when it matches the published digest and 
       fetchImpl: fetchWith(goodDigest)
     });
     assert.deepEqual(fs.readFileSync(zipPath), zipBytes);
-    assert.ok(requested.every((r) => r.url.startsWith('https://github.com/yazicmert/basket/releases/download/v0.5.0/')));
+    assert.ok(requested.every((r) => r.url.startsWith('https://github.com/yazicmert/Artifacts-Atlas/releases/download/v0.5.0/')));
     assert.ok(requested.every((r) => r.init.body === undefined), 'nothing is sent');
 
     await assert.rejects(

@@ -44,7 +44,7 @@ test('WU1. Windows updater: the running install, the install target and the chec
     const partial = makePackage(path.join(root, 'Partial'), { withExe: false });
     assert.throws(() => checkStagedWindowsPackage(partial, '0.8.0'), /UPDATE_PACKAGE_INCOMPLETE/);
 
-    assert.equal(releaseAssetUrls('v0.8.0', 'ArtifactAtlas-Windows.zip').zipUrl, 'https://github.com/yazicmert/basket/releases/download/v0.8.0/ArtifactAtlas-Windows.zip');
+    assert.equal(releaseAssetUrls('v0.8.0', 'ArtifactAtlas-Windows.zip').zipUrl, 'https://github.com/yazicmert/Artifacts-Atlas/releases/download/v0.8.0/ArtifactAtlas-Windows.zip');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

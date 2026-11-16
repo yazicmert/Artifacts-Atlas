@@ -27,7 +27,7 @@ for (;;) {
   dir = up;
 }
 if (!root) {
-  console.error('This skill runs from a clone of https://github.com/yazicmert/basket; its source was not found.');
+  console.error('This skill runs from a clone of https://github.com/yazicmert/Artifacts-Atlas; its source was not found.');
   process.exit(1);
 }
 

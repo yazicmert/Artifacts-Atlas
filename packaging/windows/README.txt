@@ -27,4 +27,4 @@ Data
   %LOCALAPPDATA%\ArtifactAtlas. Deleting this program folder does not delete them.
 
 More
-  https://yazicmert.github.io/basket/
+  https://yazicmert.github.io/Artifacts-Atlas/
