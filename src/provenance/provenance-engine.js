@@ -102,6 +102,44 @@ export class ProvenanceEngine {
       );
     }
 
+    // Sessions whose ID appears in a path, looked up by the ID's first six characters at the
+    // places an ID can start (the start of a name, or after / \\ _ . -), so the work per file
+    // does not grow with the number of sessions
+    const idIndex = new Map();
+    sessions.forEach((sess, order) => {
+      const id = sess.externalSessionId;
+      if (!id || id.length < 6) return;
+      const key = id.slice(0, 6);
+      if (!idIndex.has(key)) idIndex.set(key, []);
+      idIndex.get(key).push({ sess, order });
+    });
+    const ID_START = new Set(['/', '\\', '_', '.', '-']);
+    const sessionsNamedInPath = (p) => {
+      if (idIndex.size === 0) return [];
+      const found = new Map();
+      for (let i = 0; i + 6 <= p.length; i++) {
+        if (i > 0 && !ID_START.has(p[i - 1])) continue;
+        const list = idIndex.get(p.slice(i, i + 6));
+        if (!list) continue;
+        for (const { sess, order } of list) {
+          if (p.startsWith(sess.externalSessionId, i)) found.set(order, sess);
+        }
+      }
+      return [...found.entries()].sort((a, b) => a[0] - b[0]).map(([, sess]) => sess);
+    };
+
+    // Files a session wrote, by project and name without its ending, so a build output finds
+    // its source in one look-up instead of searching every file (the first two are enough:
+    // one of them is not the output itself)
+    const verifiedByStem = new Map();
+    for (const other of artifacts) {
+      if (!other.workspaceId || !opsByTargetPath.has(other.canonicalPath)) continue;
+      const key = `${other.workspaceId}\u0000${path.basename(other.name, other.extension)}`;
+      const list = verifiedByStem.get(key) || [];
+      if (list.length < 2) list.push(other);
+      verifiedByStem.set(key, list);
+    }
+
     const appDataRoots = application
       ? application.knownDataDirectories.map((d) => path.resolve(d.path))
       : [];
@@ -215,13 +253,7 @@ export class ProvenanceEngine {
 
       // Case 3: INFERRED provenance when filename explicitly embeds a known externalSessionId
       // (e.g., debug/session-<id>.log or checkpoint-<sessionId>.json)
-      const matchedSessionsByIdInName = sessions.filter(
-        (s) =>
-          s.externalSessionId &&
-          s.externalSessionId.length >= 6 &&
-          (artifact.name.includes(s.externalSessionId) ||
-            artifact.canonicalPath.includes(s.externalSessionId))
-      );
+      const matchedSessionsByIdInName = sessionsNamedInPath(artifact.canonicalPath);
 
       if (matchedSessionsByIdInName.length > 0) {
         artifact.sessionIds = matchedSessionsByIdInName.map((s) => s.id);
@@ -261,12 +293,8 @@ export class ProvenanceEngine {
       );
       if (isBuildOrDerivedDir && artifact.workspaceId) {
         const stem = path.basename(artifact.name, artifact.extension).replace(/\.(bundle|min|chunk|js|css)$/i, '');
-        const matchingVerifiedSourceArtifact = artifacts.find(
-          (other) =>
-            other.id !== artifact.id &&
-            other.workspaceId === artifact.workspaceId &&
-            opsByTargetPath.has(other.canonicalPath) &&
-            path.basename(other.name, other.extension) === stem
+        const matchingVerifiedSourceArtifact = (verifiedByStem.get(`${artifact.workspaceId}\u0000${stem}`) || []).find(
+          (other) => other.id !== artifact.id
         );
 
         if (matchingVerifiedSourceArtifact) {

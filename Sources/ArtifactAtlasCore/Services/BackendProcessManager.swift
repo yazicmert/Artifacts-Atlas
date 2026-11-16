@@ -119,6 +119,8 @@ public final class BackendProcessManager {
 
         let parentPid = ProcessInfo.processInfo.processIdentifier
         proc.arguments = [
+            // Scans have no file limit: room for a few million listed files
+            "--max-old-space-size=8192",
             resolver.cliScriptURL.path,
             "serve",
             "--port", "0",

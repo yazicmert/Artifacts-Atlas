@@ -36,9 +36,11 @@ import { summarizeScanForHistory, compareScans } from './graph/scan-history.js';
 import { sessionLabel } from './graph/report.js';
 import { buildReviewGroups } from './graph/review-groups.js';
 
-// Upper bound on files in one scan. The map and the UI stay responsive well beyond this
-// because they work from summaries; the bound keeps memory and scan time predictable.
-export const DEFAULT_MAX_FILES = 300000;
+// No limit on the files of one scan: every file is listed. The map and the UI work from
+// summaries, and a listed file takes about 2 KB of memory, so a million files fit well within
+// the backend's heap (raised by the launchers). A limit can still be set (maxFiles); past it
+// files are measured, not listed.
+export const DEFAULT_MAX_FILES = Infinity;
 
 /** Upper bound on files named by session tool calls that are read inside project folders. */
 export const MAX_RECORDED_FILES = 50000;
@@ -130,7 +132,10 @@ export class ArtifactAtlasService {
     additionalWorkspacePaths = [],
     onProgress = null,
     artificialDelayMs = 0,
-    scanScope = null
+    scanScope = null,
+    // Asked with the folders that could not be read: resolves to 'retry', 'skip' or 'skip-all'.
+    // Only the window passes it; without it unreadable folders are recorded and skipped.
+    onPermissionNeeded = null
   }) {
     const scope = normalizeScanScope(scanScope);
     if (this.currentScanAbortController) {
@@ -141,6 +146,19 @@ export class ArtifactAtlasService {
 
     let application = this.activeState.application;
     if (bundlePath) {
+      application = this.identifyApplication(bundlePath);
+    }
+    // A folder that could not be read waits for the user: allowed and tried again, or skipped
+    let skipAllDenied = typeof onPermissionNeeded !== 'function';
+    const askPermission = async (paths) => {
+      if (skipAllDenied || signal.aborted) return 'skip';
+      const decision = await onPermissionNeeded(paths);
+      if (decision === 'skip-all') skipAllDenied = true;
+      if (signal.aborted) throw new Error('SCAN_CANCELLED');
+      return decision === 'retry' ? 'retry' : 'skip';
+    };
+    while (bundlePath && application && (application.unreadableContainers || []).length > 0 && !skipAllDenied) {
+      if ((await askPermission(application.unreadableContainers)) !== 'retry') break;
       application = this.identifyApplication(bundlePath);
     }
 
@@ -253,6 +271,7 @@ export class ArtifactAtlasService {
       extraFiles: Array.from(recordedFiles),
       projectRoots: projectWorkspaces.map((ws) => ws.canonicalPath),
       bulkDirectoryMode: scope.dependencyFolders ? 'measure' : 'skip',
+      onPermissionDenied: (dirPath) => askPermission([dirPath]),
       signal,
       artificialDelayMs,
       onProgress: (prog) => {
@@ -273,7 +292,7 @@ export class ArtifactAtlasService {
     // The walk is done. The remaining steps run without touching the disk tree; report the
     // phase and yield so the progress endpoint can answer between them.
     const enterPhase = async (phase) => {
-      this.lastProgress = { ...(this.lastProgress || {}), phase };
+      this.lastProgress = { ...(this.lastProgress || {}), phase, currentPath: null };
       await new Promise((resolve) => setImmediate(resolve));
       // Cancelled: stop here and keep what was shown before; a half scan is never analysed
       if (signal.aborted) throw new Error('SCAN_CANCELLED');
@@ -289,6 +308,7 @@ export class ArtifactAtlasService {
       workspaces: projectWorkspaces
     });
 
+    await enterPhase('linking');
     // Resolve provenance links (VERIFIED, INFERRED, UNKNOWN) & multi-session sharing
     const provenanceResult = this.provenanceEngine.analyzeProvenance({
       artifacts: indexedArtifacts,
@@ -298,12 +318,14 @@ export class ArtifactAtlasService {
       operations: parsedRecords.operations
     });
 
+    await enterPhase('classifying');
     // Classify artifact types and risk levels (LOW, REVIEW, HIGH, PROTECTED)
     const classificationResult = this.classificationEngine.classifyArtifacts({
       artifacts: provenanceResult.artifacts,
       application
     });
 
+    await enterPhase('mapping');
     // Build Knowledge Graph & Space Treemap
     const graph = this.graphEngine.buildKnowledgeGraph({
       application,
@@ -895,10 +917,12 @@ export class ArtifactAtlasService {
     const entries = this.sqliteStore.listQuarantineEntries('QUARANTINED').filter((e) => e.batchId === batchId);
     let restored = 0;
     let kept = 0;
+    // One look-up table, not a search of every file per entry
+    const byId = new Map((this.activeState.artifacts || []).map((a) => [a.id, a]));
     for (const entry of entries) {
       try {
         const result = this.cleanupEngine.restoreQuarantineEntry({ entryId: entry.id, conflictStrategy: 'FAIL_IF_EXISTS' });
-        const art = this.activeState.artifacts.find((a) => a.id === entry.artifactId);
+        const art = byId.get(entry.artifactId);
         if (art && result.restoredToPath === art.canonicalPath) art.quarantined = false;
         restored += 1;
       } catch {
