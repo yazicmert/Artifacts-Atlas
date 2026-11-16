@@ -346,11 +346,15 @@ export function createAtlasServer(options = {}) {
       );
       // Records of a move that was cut off (the app was killed mid-move) are taken back from
       // the manifests on disk, so every file in the vault is listed and can be put back
-      try {
-        services.get(mode).cleanupEngine.reconcileManifests();
-      } catch {
-        // The vault may not exist yet
-      }
+      // After the first answers, so opening the window does not wait for it
+      const created = services.get(mode);
+      setTimeout(() => {
+        try {
+          created.cleanupEngine.reconcileManifests();
+        } catch {
+          // The vault may not exist yet, or the database closed meanwhile
+        }
+      }, 1500).unref?.();
     }
     return services.get(mode);
   };
@@ -947,7 +951,7 @@ export function createAtlasServer(options = {}) {
           availableBundles: discoverAvailableBundles(),
           defaultWorkspacePath: currentMode() === 'demo' ? demoEnv.workspaceDir : '',
           activeState: stateForClient(activeService().activeState),
-          quarantineEntries: activeService().quarantineEntriesWithSessions()
+          quarantine: activeService().quarantineView()
         });
       }
 
@@ -1012,7 +1016,7 @@ export function createAtlasServer(options = {}) {
           service
             .scanAndAnalyze({ ...scanArgs, onPermissionNeeded: askScanPermission })
             .then((state) => {
-              job.outcome = { status: 200, body: { ok: true, state: stateForClient(state), quarantineEntries: service.quarantineEntriesWithSessions() } };
+              job.outcome = { status: 200, body: { ok: true, state: stateForClient(state), quarantine: service.quarantineView() } };
             })
             .catch((err) => {
               job.outcome = err.message === 'SCAN_CANCELLED'
@@ -1035,7 +1039,7 @@ export function createAtlasServer(options = {}) {
         return sendJson(res, 200, {
           ok: true,
           state: stateForClient(state),
-          quarantineEntries: activeService().quarantineEntriesWithSessions()
+          quarantine: activeService().quarantineView()
         });
       }
 

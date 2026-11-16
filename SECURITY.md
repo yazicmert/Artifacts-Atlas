@@ -4,7 +4,7 @@ Artifact Atlas reads people's files and can move them, so security reports are w
 
 ## Reporting a problem
 
-Please report privately through [GitHub's security advisories](https://github.com/yazicmert/basket/security/advisories/new) rather than in a public issue. Include the version, the system, and the steps that show the problem. You will get an answer as soon as possible, and credit in the release notes if you would like it.
+Please report privately through [GitHub's security advisories](https://github.com/yazicmert/Artifacts-Atlas/security/advisories/new) rather than in a public issue. Include the version, the system, and the steps that show the problem. You will get an answer as soon as possible, and credit in the release notes if you would like it.
 
 ## What matters most
 

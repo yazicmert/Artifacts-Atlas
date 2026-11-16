@@ -827,6 +827,15 @@ test('S13. Suggested cleanup: the app\'s own untouched folders, safe and review-
     const held = service.sqliteStore.listQuarantineEntries('QUARANTINED');
     assert.ok(held.every((e) => e.scheduledBy === 'suggested-cleanup' && e.autoPurgeAt === prepared.purgeAt));
     assert.ok(held.some((e) => e.riskCategory === 'REVIEW'));
+    // The window sees the cleanup as one row, worked out without sending every entry
+    const view = service.quarantineView();
+    assert.equal(view.batches.length, 1);
+    assert.deepEqual(
+      [view.batches[0].scheduledBy, view.batches[0].count, view.batches[0].waitingCount, view.batches[0].dueAt],
+      ['suggested-cleanup', held.length, held.length, prepared.purgeAt]
+    );
+    assert.equal(view.heldCount, held.length);
+    assert.equal(view.entries.length, 0, 'scheduled entries are not listed one by one');
 
     // Day 7: all deleted, review-first ones too, but only while row and manifest agree on risk
     const [tampered, ...rest] = held;

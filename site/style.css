@@ -164,7 +164,7 @@ pre .c {
 .topbar.is-compact .topbar-inner {
   pointer-events: auto;
   transform: translateY(8px);
-  max-width: 660px;
+  max-width: 780px;
   min-height: 44px;
   padding-inline: 14px 6px;
   border-radius: 999px;
@@ -245,6 +245,7 @@ main,
 .topnav a {
   padding: 6px 10px;
   border-radius: 6px;
+  white-space: nowrap;
   color: var(--ink-2);
   text-decoration: none;
 }
@@ -1996,6 +1997,10 @@ footer {
     gap: 12px;
   }
 
+}
+
+/* The section links leave before the bar is too narrow to hold them on one line */
+@media (max-width: 880px) {
   .topnav a.optional {
     display: none;
   }

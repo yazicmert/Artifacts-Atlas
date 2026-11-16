@@ -695,6 +695,56 @@ export class SQLiteStore {
       .filter(Boolean);
   }
 
+  /**
+   * What the Quarantine screen shows, worked out in SQL so a vault of a hundred thousand files
+   * is never sent whole: totals, one row per scheduled cleanup, and the newest other entries.
+   */
+  quarantineOverview({ limit = 300 } = {}) {
+    const one = (sql, ...args) => this.db.prepare(sql).get(...args) || {};
+    const held = one("SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS b, MIN(quarantined_at) AS oldest FROM quarantine_entries WHERE status = 'QUARANTINED'");
+    const purged = one("SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS b FROM quarantine_entries WHERE status = 'PURGED'");
+    const batches = this.db
+      .prepare(
+        `SELECT batch_id AS batchId, scheduled_by AS scheduledBy, COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes,
+                MIN(quarantined_at) AS quarantinedAt, SUM(auto_purge_at IS NOT NULL) AS waitingCount,
+                MIN(auto_purge_at) AS dueAt, SUM(needed_again_at IS NOT NULL) AS keptCount
+           FROM quarantine_entries
+          WHERE status = 'QUARANTINED' AND scheduled_by IS NOT NULL
+          GROUP BY batch_id, scheduled_by
+          ORDER BY quarantinedAt DESC`
+      )
+      .all();
+    const otherWhere = "NOT (status = 'QUARANTINED' AND scheduled_by IS NOT NULL)";
+    const otherCount = one(`SELECT COUNT(*) AS n FROM quarantine_entries WHERE ${otherWhere}`).n || 0;
+    const entries = this.db
+      .prepare(`SELECT * FROM quarantine_entries WHERE ${otherWhere} ORDER BY quarantined_at DESC LIMIT ?`)
+      .all(limit)
+      .map((r) => quarantineRowToEntry(r));
+    return {
+      heldCount: held.n || 0,
+      heldBytes: held.b || 0,
+      oldestHeldAt: held.oldest || null,
+      purgedCount: purged.n || 0,
+      purgedBytes: purged.b || 0,
+      batches,
+      entries,
+      moreEntries: Math.max(0, otherCount - entries.length)
+    };
+  }
+
+  /** Entries held with a deletion date or a cleanup kind: what the hourly check looks at. */
+  listScheduledQuarantineEntries() {
+    return this.db
+      .prepare("SELECT * FROM quarantine_entries WHERE status = 'QUARANTINED' AND scheduled_by IS NOT NULL AND auto_purge_at IS NOT NULL AND needed_again_at IS NULL")
+      .all()
+      .map((r) => quarantineRowToEntry(r));
+  }
+
+  /** Only the ids, for checks over the whole vault. */
+  listQuarantineEntryIds() {
+    return this.db.prepare('SELECT id FROM quarantine_entries').all().map((r) => r.id);
+  }
+
   getQuarantineEntryById(entryId) {
     const row = this.db.prepare('SELECT * FROM quarantine_entries WHERE id = ?').get(entryId);
     return row ? quarantineRowToEntry(row) : null;

@@ -1,4 +1,4 @@
-# AGENTS.md — Guidelines for AI Coding Agents Working in `basket` (Artifact Atlas)
+# AGENTS.md — Guidelines for AI Coding Agents Working in `Artifacts-Atlas` (Artifact Atlas)
 
 ## 1. Repository Mission & Non-Negotiable Safety Rules
 

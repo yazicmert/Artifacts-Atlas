@@ -1,7 +1,8 @@
 const uiState = {
   bootstrap: null,
   activeState: null,
-  quarantineEntries: [],
+  // The Quarantine as the server sums it up (totals, scheduled cleanups, newest entries)
+  quarantine: null,
   selectedNodeId: null,
   selectedArtifactIds: new Set(),
   activeTrace: null,
@@ -297,7 +298,7 @@ async function loadBootstrap() {
           sd.neededAgain ? ` ${pluralize(sd.neededAgain, 'file')} ${sd.neededAgain === 1 ? 'was' : 'were'} made again by ${sd.neededAgain === 1 ? 'its app and is' : 'their apps and are'} kept.` : ''
         }`.trim(), 8000), 800);
     }
-    uiState.quarantineEntries = boot.quarantineEntries || [];
+    uiState.quarantine = boot.quarantine || null;
     uiState.pendingWorkspacePath = boot.defaultWorkspacePath || '';
     uiState.pendingBundlePath = null;
 
@@ -1000,11 +1001,15 @@ async function executeScan({ bundlePath, workspacePath }) {
     while (pollingProgress) {
       try {
         const res = await apiRequest('/api/scan/progress');
+        // A scan can ask before it reports any progress (an app folder it cannot read is found
+        // first), so the question is shown whatever the progress says
+        if (pollingProgress) showScanPermission(res.permission || null);
         if (pollingProgress && res.progress) {
           const prog = res.progress;
           const title = document.getElementById('scan-status-title');
-          showScanPermission(res.permission || null);
-          if (prog.phase === 'records') {
+          if (prog.phase === 'permission') {
+            title.textContent = 'Waiting for your answer…';
+          } else if (prog.phase === 'records') {
             title.textContent = `Reading session records… ${Number(prog.recordsDone || 0).toLocaleString()}${prog.recordBytes ? `, ${formatBytes(prog.recordBytes)}` : ''}`;
           } else if (prog.phase === 'analyzing') {
             title.textContent = `Analyzing ${Number(prog.discoveredArtifactCount || 0).toLocaleString()} files…`;
@@ -1059,7 +1064,7 @@ async function executeScan({ bundlePath, workspacePath }) {
     if (uiState.scanCancelled) return;
 
     uiState.activeState = res.state;
-    uiState.quarantineEntries = res.quarantineEntries || [];
+    uiState.quarantine = res.quarantine || null;
     uiState.selectedNodeId = null;
     uiState.selectedArtifactIds.clear();
     uiState.activeTrace = null;
@@ -3058,7 +3063,7 @@ async function confirmUnusedCleanup() {
   try {
     const res = await apiRequest('/api/cleanup/unused', 'POST', { token: plan.token });
     uiState.activeState = res.activeState;
-    uiState.quarantineEntries = res.quarantineEntries || [];
+    uiState.quarantine = res.quarantine || null;
     document.getElementById('unused-modal').classList.add('hidden');
     reloadMapLevel();
     renderGlobalInspectorSummary();
@@ -3513,8 +3518,9 @@ function quarantineOriginHtml(entry) {
 function renderQuarantineVaultView() {
   const listEl = document.getElementById('quarantine-entries-list');
   if (!listEl) return;
+  const view = uiState.quarantine;
 
-  if (!uiState.quarantineEntries || uiState.quarantineEntries.length === 0) {
+  if (!view || (view.batches.length === 0 && view.entries.length === 0)) {
     renderQuarantineSummary();
     listEl.innerHTML = `<div class="empty-note">Nothing in Quarantine. Select files on the map and choose Move to Quarantine.</div>`;
     return;
@@ -3523,40 +3529,30 @@ function renderQuarantineVaultView() {
   listEl.innerHTML = '';
   renderQuarantineSummary();
 
-  // Each unused-files cleanup still waiting is one row: its count, size, date and Put All Back
-  const scheduled = new Map();
-  const single = [];
-  for (const entry of uiState.quarantineEntries) {
-    if (entry.status === 'QUARANTINED' && (entry.scheduledBy === 'unused-cleanup' || entry.scheduledBy === 'suggested-cleanup')) {
-      if (!scheduled.has(entry.batchId)) scheduled.set(entry.batchId, []);
-      scheduled.get(entry.batchId).push(entry);
-    } else {
-      single.push(entry);
-    }
-  }
-  for (const [batchId, entries] of scheduled) {
-    const waiting = entries.filter((e) => e.autoPurgeAt);
-    const kept = entries.length - waiting.length;
-    const due = waiting.map((e) => Date.parse(e.autoPurgeAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
-    const daysLeft = due ? Math.max(0, Math.ceil((due - Date.now()) / 86400000)) : null;
+  // Each scheduled cleanup still waiting is one row: its count, size, date and Put All Back
+  for (const batch of view.batches) {
+    const due = Date.parse(batch.dueAt || '');
+    const daysLeft = Number.isFinite(due) ? Math.max(0, Math.ceil((due - Date.now()) / 86400000)) : null;
+    const kept = batch.keptCount || 0;
     const row = document.createElement('div');
     row.className = 'quarantine-row-card quarantine-batch';
     row.innerHTML = `
       <div class="quarantine-row-main">
         <div class="quarantine-row-title">
-          <strong>${entries[0].scheduledBy === 'suggested-cleanup' ? 'Suggested cleanup' : 'Unused leftovers'}</strong>
-          <span>${pluralize(entries.length, 'file')} · ${formatBytes(entries.reduce((s, e) => s + (e.sizeBytes || 0), 0))}</span>
-          <span class="metric-label">Removed ${escapeHtml(formatDate(entries[0].quarantinedAt))}</span>
+          <strong>${batch.scheduledBy === 'suggested-cleanup' ? 'Suggested cleanup' : 'Unused leftovers'}</strong>
+          <span>${pluralize(batch.count, 'file')} · ${formatBytes(batch.bytes)}</span>
+          <span class="metric-label">Removed ${escapeHtml(formatDate(batch.quarantinedAt))}</span>
         </div>
         <div class="quarantine-batch-when">${
-          waiting.length
-            ? `${daysLeft === 0 ? 'Deleted today' : `Deleted in ${pluralize(daysLeft, 'day')}`}, on ${escapeHtml(formatDate(new Date(due).toISOString()))}, unless you put ${waiting.length === 1 ? 'it' : 'them'} back.`
+          batch.waitingCount
+            ? `${daysLeft === 0 ? 'Deleted today' : `Deleted in ${pluralize(daysLeft, 'day')}`}, on ${escapeHtml(formatDate(new Date(due).toISOString()))}, unless you put ${batch.waitingCount === 1 ? 'it' : 'them'} back.`
             : 'Nothing left to delete on a schedule.'
         }${kept ? ` ${pluralize(kept, 'file')} ${kept === 1 ? 'was' : 'were'} made again by ${kept === 1 ? 'its app and stays' : 'their apps and stay'} here, not deleted.` : ''}</div>
       </div>
-      <button class="secondary-btn restore-batch-btn" data-batch-id="${escapeHtml(batchId)}" type="button">Put All Back</button>`;
+      <button class="secondary-btn restore-batch-btn" data-batch-id="${escapeHtml(batch.batchId)}" type="button">Put All Back</button>`;
     listEl.appendChild(row);
   }
+  const single = view.entries;
 
   // The rest one by one; a very long list shows its newest part
   const SHOWN = 300;
@@ -3591,10 +3587,10 @@ function renderQuarantineVaultView() {
     listEl.appendChild(row);
   });
 
-  if (single.length > SHOWN) {
+  if (view.moreEntries > 0) {
     const more = document.createElement('div');
     more.className = 'empty-note';
-    more.textContent = `And ${pluralize(single.length - SHOWN, 'older entry', 'older entries')}.`;
+    more.textContent = `And ${pluralize(view.moreEntries, 'older entry', 'older entries')}.`;
     listEl.appendChild(more);
   }
 
@@ -3604,7 +3600,7 @@ function renderQuarantineVaultView() {
       try {
         const res = await apiRequest('/api/quarantine/restore-batch', 'POST', { batchId: btn.dataset.batchId });
         uiState.activeState = res.activeState;
-        uiState.quarantineEntries = res.quarantineEntries || [];
+        uiState.quarantine = res.quarantine || null;
         reloadMapLevel();
         renderGlobalInspectorSummary();
         renderQuarantineVaultView();
@@ -3627,7 +3623,7 @@ function renderQuarantineVaultView() {
           conflictStrategy: strategy
         });
         uiState.activeState = res.activeState;
-        uiState.quarantineEntries = res.quarantineEntries || [];
+        uiState.quarantine = res.quarantine || null;
         reloadMapLevel();
         renderGlobalInspectorSummary();
         renderQuarantineVaultView();
@@ -3649,13 +3645,10 @@ function renderQuarantineVaultView() {
 function renderQuarantineSummary() {
   const box = document.getElementById('quarantine-summary');
   if (!box) return;
-  const entries = uiState.quarantineEntries || [];
-  const held = entries.filter((e) => e.status === 'QUARANTINED');
-  const purged = entries.filter((e) => e.status === 'PURGED');
-  const sum = (list) => list.reduce((s, e) => s + (e.sizeBytes || 0), 0);
-  box.innerHTML = held.length || purged.length
-    ? `${held.length ? `<span><strong>${formatBytes(sum(held))}</strong> held in ${pluralize(held.length, 'file')}</span>` : ''}${
-        purged.length ? `<span>${formatBytes(sum(purged))} freed by emptying</span>` : ''
+  const v = uiState.quarantine || { heldCount: 0, heldBytes: 0, purgedCount: 0, purgedBytes: 0 };
+  box.innerHTML = v.heldCount || v.purgedCount
+    ? `${v.heldCount ? `<span><strong>${formatBytes(v.heldBytes)}</strong> held in ${pluralize(v.heldCount, 'file')}</span>` : ''}${
+        v.purgedCount ? `<span>${formatBytes(v.purgedBytes)} freed by emptying</span>` : ''
       }`
     : '';
 }
@@ -3674,13 +3667,13 @@ async function openPurgeModal() {
     return;
   }
   uiState.pendingPurge = purge;
-  const held = (uiState.quarantineEntries || []).filter((e) => e.status === 'QUARANTINED');
+  const heldCount = uiState.quarantine?.heldCount || 0;
   if (purge.count === 0) {
-    const oldest = held.map((e) => Date.parse(e.quarantinedAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
-    const ready = oldest ? new Date(oldest + purge.minAgeDays * 86400000) : null;
+    const oldest = Date.parse(uiState.quarantine?.oldestHeldAt || '');
+    const ready = Number.isFinite(oldest) ? new Date(oldest + purge.minAgeDays * 86400000) : null;
     body.innerHTML = `<div class="purge-empty">
       <div class="purge-empty-title">Nothing has waited ${purge.minAgeDays} days yet</div>
-      <p class="inspector-note">${held.length > 0 && ready ? `The oldest file can be emptied from ${escapeHtml(formatDate(ready.toISOString()))}. Until then everything here can be put back.` : 'Files moved to Quarantine wait here first, so you can put them back.'}</p>
+      <p class="inspector-note">${heldCount > 0 && ready ? `The oldest file can be emptied from ${escapeHtml(formatDate(ready.toISOString()))}. Until then everything here can be put back.` : 'Files moved to Quarantine wait here first, so you can put them back.'}</p>
     </div>`;
     confirmBtn.classList.add('hidden');
   } else {
@@ -3719,7 +3712,7 @@ async function confirmPurge() {
   btn.disabled = true;
   try {
     const res = await apiRequest('/api/quarantine/purge', 'POST', { token: purge.token });
-    uiState.quarantineEntries = res.quarantineEntries || [];
+    uiState.quarantine = res.quarantine || null;
     closePurgeModal();
     renderQuarantineVaultView();
     updateQuarantineCountPill();
@@ -3744,9 +3737,7 @@ function bindPurgeEvents() {
 }
 
 function updateQuarantineCountPill() {
-  const activeCount = (uiState.quarantineEntries || []).filter(
-    (e) => e.status === 'QUARANTINED'
-  ).length;
+  const activeCount = uiState.quarantine?.heldCount || 0;
   document.getElementById('quarantine-count-pill').textContent = String(activeCount);
 }
 
@@ -4087,7 +4078,7 @@ function bindModalEvents() {
         closeCleanup();
       }
       uiState.activeState = res.activeState;
-      uiState.quarantineEntries = res.quarantineEntries || [];
+      uiState.quarantine = res.quarantine || null;
       clearNodeSelection();
       reloadMapLevel();
       renderGlobalInspectorSummary();

@@ -643,7 +643,7 @@ export class CleanupEngine {
     } catch {
       return 0;
     }
-    const known = new Set(this.sqliteStore.listQuarantineEntries().map((e) => e.id));
+    const known = new Set(this.sqliteStore.listQuarantineEntryIds());
     const missing = [];
     for (const batchName of batchNames) {
       if (!/^[A-Za-z0-9_-]+$/.test(batchName)) continue;
@@ -945,7 +945,7 @@ export class CleanupEngine {
       return summary;
     }
     const scheduled = this.sqliteStore
-      .listQuarantineEntries('QUARANTINED')
+      .listScheduledQuarantineEntries()
       .filter((e) => SCHEDULE_RISKS[e.scheduledBy] && e.autoPurgeAt && !e.neededAgainAt);
     const nowIso = new Date(now).toISOString();
     let changed = [];

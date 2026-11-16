@@ -8,8 +8,8 @@
  * installed; the app only tells the user that a newer version exists.
  */
 
-export const RELEASES_API_URL = 'https://api.github.com/repos/yazicmert/basket/releases/latest';
-export const RELEASES_PAGE_URL = 'https://github.com/yazicmert/basket/releases/latest';
+export const RELEASES_API_URL = 'https://api.github.com/repos/yazicmert/Artifacts-Atlas/releases/latest';
+export const RELEASES_PAGE_URL = 'https://github.com/yazicmert/Artifacts-Atlas/releases/latest';
 // GitHub is asked at most this often, however many times the window asks the backend
 export const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5000;

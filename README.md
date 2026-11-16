@@ -14,15 +14,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yazicmert/basket/releases/latest/download/ArtifactAtlas-macOS.dmg"><strong>Download for macOS</strong></a>
+  <a href="https://github.com/yazicmert/Artifacts-Atlas/releases/latest/download/ArtifactAtlas-macOS.dmg"><strong>Download for macOS</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/yazicmert/basket/releases/latest/download/ArtifactAtlas-Windows.zip"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/yazicmert/Artifacts-Atlas/releases/latest/download/ArtifactAtlas-Windows.zip"><strong>Download for Windows</strong></a>
   &nbsp;·&nbsp;
-  <a href="https://yazicmert.github.io/basket/">Website</a>
+  <a href="https://yazicmert.github.io/Artifacts-Atlas/">Website</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yazicmert/basket/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yazicmert/basket?style=flat-square&label=release&color=1b1b1a" /></a>
+  <a href="https://github.com/yazicmert/Artifacts-Atlas/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/yazicmert/Artifacts-Atlas?style=flat-square&label=release&color=1b1b1a" /></a>
   <img alt="macOS 14+ and Windows 10/11" src="https://img.shields.io/badge/macOS%2014%2B%20%C2%B7%20Windows%2010%2F11-1b1b1a?style=flat-square" />
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1b1b1a?style=flat-square" /></a>
 </p>
@@ -52,23 +52,23 @@ AI coding tools leave far more on disk than the code you asked for: installs, ca
 
 ## Private by design
 
-Artifact Atlas runs on your computer and reads nothing until you allow it. It never starts the apps it scans, never stores your conversations, and never ties a file to a session on a guess. There is no account and no telemetry; the only network use is the update check, which you can turn off. Read the [privacy policy](https://yazicmert.github.io/basket/legal/privacy/) and what each [permission](https://yazicmert.github.io/basket/permissions/) allows.
+Artifact Atlas runs on your computer and reads nothing until you allow it. It never starts the apps it scans, never stores your conversations, and never ties a file to a session on a guess. There is no account and no telemetry; the only network use is the update check, which you can turn off. Read the [privacy policy](https://yazicmert.github.io/Artifacts-Atlas/legal/privacy/) and what each [permission](https://yazicmert.github.io/Artifacts-Atlas/permissions/) allows.
 
 ## From inside your AI app
 
 Clone this repository and open it in Claude Code, Codex or Cursor: the **artifact-atlas** skill loads on its own. Ask *"What have you left on my disk?"* and the agent asks once before reading, then shows what that app left behind as text bar charts: totals, what is safe to remove, the largest kinds and the sessions that left the most.
 
 ```bash
-git clone https://github.com/yazicmert/basket.git && cd basket && claude
+git clone https://github.com/yazicmert/Artifacts-Atlas.git && cd Artifacts-Atlas && claude
 ```
 
 The skill only looks; cleanup stays in the app, through the Quarantine. It reads file names, sizes and dates and the structure of the app's session records, never prints or stores conversation text, and writes nothing. Its answer becomes part of your chat, so it holds numbers unless you ask for paths. Needs Node.js 22.13 or newer.
 
 ## Install
 
-**macOS** 14 or later, Apple silicon. Open the [disk image](https://github.com/yazicmert/basket/releases/latest/download/ArtifactAtlas-macOS.dmg), drag the app into Applications, and on first launch choose **Open Anyway** in System Settings → Privacy & Security.
+**macOS** 14 or later, Apple silicon. Open the [disk image](https://github.com/yazicmert/Artifacts-Atlas/releases/latest/download/ArtifactAtlas-macOS.dmg), drag the app into Applications, and on first launch choose **Open Anyway** in System Settings → Privacy & Security.
 
-**Windows** 10 or 11. Extract the [ZIP](https://github.com/yazicmert/basket/releases/latest/download/ArtifactAtlas-Windows.zip) and start `ArtifactAtlas.exe`. At *Windows protected your PC*, choose **More info**, then **Run anyway**. Nothing is installed.
+**Windows** 10 or 11. Extract the [ZIP](https://github.com/yazicmert/Artifacts-Atlas/releases/latest/download/ArtifactAtlas-Windows.zip) and start `ArtifactAtlas.exe`. At *Windows protected your PC*, choose **More info**, then **Run anyway**. Nothing is installed.
 
 The builds are not yet notarized or signed with a certificate, which is why each system asks once. Every release lists the SHA-256 of its downloads, and the app updates itself in place when you click its update button.
 
@@ -77,7 +77,7 @@ The builds are not yet notarized or signed with a certificate, which is why each
 Node.js 22.13 or newer, no dependencies.
 
 ```bash
-git clone https://github.com/yazicmert/basket.git && cd basket
+git clone https://github.com/yazicmert/Artifacts-Atlas.git && cd Artifacts-Atlas
 npm start    # the interface on http://127.0.0.1:4310
 npm test     # runs on Linux, macOS and Windows
 ```
@@ -109,7 +109,7 @@ Continuous integration tests every change on Linux, Windows and macOS, including
 
 ## More
 
-[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Terms](https://yazicmert.github.io/basket/legal/terms/)
+[Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Terms](https://yazicmert.github.io/Artifacts-Atlas/legal/terms/)
 
 <br />
 

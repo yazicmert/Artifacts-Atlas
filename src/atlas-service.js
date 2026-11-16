@@ -152,7 +152,11 @@ export class ArtifactAtlasService {
     let skipAllDenied = typeof onPermissionNeeded !== 'function';
     const askPermission = async (paths) => {
       if (skipAllDenied || signal.aborted) return 'skip';
+      // The window shows that the scan is waiting for the user, not stuck
+      const before = this.lastProgress;
+      this.lastProgress = { ...(before || {}), phase: 'permission', currentPath: paths[0] || null };
       const decision = await onPermissionNeeded(paths);
+      this.lastProgress = before;
       if (decision === 'skip-all') skipAllDenied = true;
       if (signal.aborted) throw new Error('SCAN_CANCELLED');
       return decision === 'retry' ? 'retry' : 'skip';
@@ -423,6 +427,30 @@ export class ArtifactAtlasService {
    * Quarantine entries with the IDs of the sessions their file belonged to, so the window can
    * name the prompt each came from. Only IDs are added; no conversation text.
    */
+  /**
+   * The Quarantine as the window shows it (see SQLiteStore.quarantineOverview): totals, one row
+   * per scheduled cleanup and the newest 300 other entries, each with only what a row shows.
+   */
+  quarantineView() {
+    const view = this.sqliteStore.quarantineOverview({ limit: 300 });
+    const byId = new Map();
+    for (const a of this.activeState.artifacts || []) byId.set(a.id, a);
+    view.entries = view.entries.map((e) => ({
+      id: e.id,
+      batchId: e.batchId,
+      artifactName: e.artifactName,
+      originalPath: e.originalPath,
+      sizeBytes: e.sizeBytes,
+      sha256: e.sha256,
+      status: e.status,
+      quarantinedAt: e.quarantinedAt,
+      restoredAt: e.restoredAt,
+      purgedAt: e.purgedAt,
+      sessionIds: e.sessionIds?.length ? e.sessionIds : byId.get(e.artifactId)?.sessionIds || []
+    }));
+    return view;
+  }
+
   quarantineEntriesWithSessions() {
     const byId = new Map((this.activeState.artifacts || []).map((a) => [a.id, a]));
     return this.sqliteStore.listQuarantineEntries().map((entry) => ({
@@ -696,7 +724,7 @@ export class ArtifactAtlasService {
     return {
       ...result,
       updatedGraph: this.activeState.graph,
-      quarantineEntries: this.quarantineEntriesWithSessions()
+      quarantine: this.quarantineView()
     };
   }
 
@@ -719,7 +747,7 @@ export class ArtifactAtlasService {
     return {
       ...result,
       updatedGraph: this.activeState.graph,
-      quarantineEntries: this.quarantineEntriesWithSessions()
+      quarantine: this.quarantineView()
     };
   }
 
@@ -755,7 +783,7 @@ export class ArtifactAtlasService {
       purgedCount: purged.length,
       skippedCount: pending.ids.length - purged.length,
       freedBytes: purged.reduce((s, p) => s + (p.sizeBytes || 0), 0),
-      quarantineEntries: this.quarantineEntriesWithSessions()
+      quarantine: this.quarantineView()
     };
   }
 
@@ -908,7 +936,7 @@ export class ArtifactAtlasService {
         return total;
       })(),
       blockedCount: result.blockedItems.length + (pending.ids.length - selected.length),
-      quarantineEntries: this.quarantineEntriesWithSessions()
+      quarantine: this.quarantineView()
     };
   }
 
@@ -930,7 +958,7 @@ export class ArtifactAtlasService {
       }
     }
     this.rebuildActiveGraph();
-    return { restored, kept, quarantineEntries: this.quarantineEntriesWithSessions() };
+    return { restored, kept, quarantine: this.quarantineView() };
   }
 
   rebuildActiveGraph() {

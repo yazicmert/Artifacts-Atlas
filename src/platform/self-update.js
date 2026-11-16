@@ -24,7 +24,7 @@ import { parseVersion } from './update-check.js';
 export const APP_BUNDLE_ID = 'com.artifactatlas.desktop';
 export const ZIP_ASSET_NAME = 'ArtifactAtlas-macOS.zip';
 export const SUMS_ASSET_NAME = 'SHA256SUMS.txt';
-const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/yazicmert/basket/releases/download/';
+const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/yazicmert/Artifacts-Atlas/releases/download/';
 const ALLOWED_FINAL_HOSTS = new Set([
   'github.com',
   'objects.githubusercontent.com',
